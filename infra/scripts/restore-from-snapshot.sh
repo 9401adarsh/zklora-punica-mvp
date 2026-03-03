@@ -10,7 +10,7 @@
 
 set -euo pipefail
 
-INSTANCE_NAME="zklora-dev"
+INSTANCE_NAME="aa-zklora-dev"
 ZONE="us-central1-a"
 SNAPSHOT_NAME=""
 
@@ -26,7 +26,7 @@ PROJECT=$(gcloud config get-value project 2>/dev/null)
 if [ -z "$SNAPSHOT_NAME" ]; then
   echo "Finding most recent zklora snapshot..."
   SNAPSHOT_NAME=$(gcloud compute snapshots list \
-    --filter="name~zklora-dev-snap" \
+    --filter="name~aa-zklora-dev-snap" \
     --sort-by="~creationTimestamp" \
     --format="value(name)" \
     --limit=1 2>/dev/null || echo "")
@@ -73,7 +73,7 @@ gcloud compute instances create "$INSTANCE_NAME" \
   --service-account="790904411643-compute@developer.gserviceaccount.com" \
   --maintenance-policy=TERMINATE \
   --no-restart-on-failure \
-  --tags=zklora-dev \
+  --tags=aa-zklora-dev \
   --scopes=https://www.googleapis.com/auth/cloud-platform \
   --no-shielded-secure-boot \
   --shielded-vtpm \

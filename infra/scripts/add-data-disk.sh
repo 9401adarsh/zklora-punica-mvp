@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # =============================================================================
 # add-data-disk.sh
-# Creates and attaches a persistent data disk to an existing zklora-dev VM.
+# Creates and attaches a persistent data disk to an existing aa-zklora-dev VM.
 # Can be run at any time — the disk is independent of VM lifecycle.
 #
 # Usage:
@@ -18,17 +18,17 @@
 # the VM, the disk survives and can be re-attached.
 #
 # To detach later:
-#   gcloud compute instances detach-disk zklora-dev \
-#     --disk=zklora-dev-data --zone=us-central1-a
+#   gcloud compute instances detach-disk aa-zklora-dev \
+#     --disk=aa-zklora-dev-data --zone=us-central1-a
 #
 # To delete the disk entirely:
-#   gcloud compute disks delete zklora-dev-data --zone=us-central1-a
+#   gcloud compute disks delete aa-zklora-dev-data --zone=us-central1-a
 # =============================================================================
 
 set -euo pipefail
 
 # -- config -------------------------------------------------------------------
-INSTANCE_NAME="zklora-dev"
+INSTANCE_NAME="aa-zklora-dev"
 ZONE="us-central1-a"
 DISK_NAME="${INSTANCE_NAME}-data"
 DISK_TYPE="pd-balanced"       # standard SSD — cheaper than pd-ssd, still fast

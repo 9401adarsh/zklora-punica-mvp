@@ -27,7 +27,7 @@
 set -euo pipefail
 
 # -- config -- edit these if needed ---------------------------------------------
-INSTANCE_NAME="zklora-dev"
+INSTANCE_NAME="aa-zklora-dev"
 ZONE="us-central1-a"
 MACHINE_TYPE_A100="a2-highgpu-1g"
 MACHINE_TYPE_T4="n1-standard-8"
@@ -94,7 +94,7 @@ if ! gcloud compute firewall-rules describe allow-ssh-zklora \
     --action=ALLOW \
     --rules=tcp:22 \
     --source-ranges=0.0.0.0/0 \
-    --target-tags=zklora-dev \
+    --target-tags=aa-zklora-dev \
     --description="SSH only for zklora dev VMs"
   echo "[OK] Firewall rule created (SSH only, port 22)"
 else
@@ -120,7 +120,7 @@ gcloud compute instances create "$INSTANCE_NAME" \
   --boot-disk-device-name="$INSTANCE_NAME-disk" \
   --maintenance-policy=TERMINATE \
   --no-restart-on-failure \
-  --tags=zklora-dev \
+  --tags=aa-zklora-dev \
   --scopes=https://www.googleapis.com/auth/cloud-platform \
   --no-shielded-secure-boot \
   --shielded-vtpm \
@@ -203,7 +203,7 @@ else
     fi
     gcloud billing budgets create \
       --billing-account="$BILLING_ACCOUNT" \
-      --display-name="zklora-dev-budget" \
+      --display-name="aa-zklora-dev-budget" \
       --budget-amount="${BUDGET_ALERT_USD}USD" \
       --threshold-rules=percent=0.5,basis=CURRENT_SPEND \
       --threshold-rules=percent=0.9,basis=CURRENT_SPEND \

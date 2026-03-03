@@ -12,7 +12,7 @@
 
 set -euo pipefail
 
-INSTANCE_NAME="zklora-dev"
+INSTANCE_NAME="aa-zklora-dev"
 ZONE="us-central1-a"
 REMOTE_DIR="/home/$USER/zklora-punica-mvp"
 
@@ -82,6 +82,6 @@ if [ "$NO_SHELL" = false ]; then
   echo "(Type 'exit' to leave the shell -- container keeps running)"
   echo ""
   gcloud compute ssh "$INSTANCE_NAME" --zone="$ZONE" --command="
-    docker exec -it zklora-dev /bin/bash
+    docker exec -it aa-zklora-dev /bin/bash
   " -- -t
 fi

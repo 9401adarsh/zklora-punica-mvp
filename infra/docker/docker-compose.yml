@@ -19,8 +19,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: zklora-dev:latest
-    container_name: zklora-dev
+    image: aa-zklora-dev:latest
+    container_name: aa-zklora-dev
     runtime: nvidia
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
@@ -52,7 +52,7 @@ services:
 
   # -- jupyter service (optional, separate from main dev shell) ----------------
   jupyter:
-    image: zklora-dev:latest
+    image: aa-zklora-dev:latest
     container_name: zklora-jupyter
     runtime: nvidia
     environment:

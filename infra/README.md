@@ -192,8 +192,8 @@ The disk is formatted as ext4 and mounted at `/mnt/data`. Useful for witness log
 
 To detach or delete the disk later:
 ```bash
-gcloud compute instances detach-disk zklora-dev --disk=zklora-dev-data --zone=us-central1-a
-gcloud compute disks delete zklora-dev-data --zone=us-central1-a
+gcloud compute instances detach-disk aa-zklora-dev --disk=aa-zklora-dev-data --zone=us-central1-a
+gcloud compute disks delete aa-zklora-dev-data --zone=us-central1-a
 ```
 
 ### `ssh-instance.sh` — SSH into VM
@@ -321,7 +321,7 @@ First `import punica` compiles SGMV kernels -- takes a few minutes. If it fails,
 ```bash
 docker system prune   # cleans unused images/containers (not volumes)
 # If you need more disk:
-gcloud compute disks resize zklora-dev-disk --size=300GB --zone=us-central1-a
+gcloud compute disks resize aa-zklora-dev-disk --size=300GB --zone=us-central1-a
 ```
 
 **Budget alert fired**

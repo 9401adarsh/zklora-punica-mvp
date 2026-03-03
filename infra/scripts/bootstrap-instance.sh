@@ -12,7 +12,7 @@
 
 set -euo pipefail
 
-INSTANCE_NAME="zklora-dev"
+INSTANCE_NAME="aa-zklora-dev"
 ZONE="us-central1-a"
 REMOTE_DIR="/home/$USER/zklora-punica-mvp"
 
@@ -58,14 +58,14 @@ echo ""
 echo "Building docker image on instance (this will take 10-15 minutes)..."
 gcloud compute ssh "$INSTANCE_NAME" --zone="$ZONE" --command="
   cd ${REMOTE_DIR}/infra/docker
-  docker build -t zklora-dev:latest . 2>&1 | tail -20
+  docker build -t aa-zklora-dev:latest . 2>&1 | tail -20
 "
 echo "[OK] Docker image built"
 
 # -- verify GPU inside container -----------------------------------------------
 echo "Verifying GPU inside container..."
 gcloud compute ssh "$INSTANCE_NAME" --zone="$ZONE" --command="
-  docker run --rm --gpus all zklora-dev:latest \
+  docker run --rm --gpus all aa-zklora-dev:latest \
     python3 -c \"
 import torch
 print('CUDA available:', torch.cuda.is_available())

@@ -11,7 +11,7 @@
 
 set -euo pipefail
 
-INSTANCE_NAME="zklora-dev"
+INSTANCE_NAME="aa-zklora-dev"
 ZONE="us-central1-a"
 
 JUPYTER=false

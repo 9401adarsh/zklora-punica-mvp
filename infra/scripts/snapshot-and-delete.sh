@@ -17,10 +17,10 @@
 
 set -euo pipefail
 
-INSTANCE_NAME="zklora-dev"
+INSTANCE_NAME="aa-zklora-dev"
 ZONE="us-central1-a"
 REMOTE_DIR="/home/$USER/zklora-punica-mvp"
-SNAPSHOT_NAME="zklora-dev-snap-$(date +%Y%m%d)"
+SNAPSHOT_NAME="aa-zklora-dev-snap-$(date +%Y%m%d)"
 
 # -- safety check --------------------------------------------------------------
 echo "----------------------------------------"
@@ -79,7 +79,7 @@ echo "Creating snapshot '$SNAPSHOT_NAME'..."
 gcloud compute disks snapshot "${INSTANCE_NAME}-disk" \
   --zone="$ZONE" \
   --snapshot-names="$SNAPSHOT_NAME" \
-  --description="zklora-dev snapshot $(date +%Y-%m-%d)"
+  --description="aa-zklora-dev snapshot $(date +%Y-%m-%d)"
 echo "[OK] Snapshot created"
 
 # -- delete VM -----------------------------------------------------------------
