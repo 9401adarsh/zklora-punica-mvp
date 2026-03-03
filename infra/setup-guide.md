@@ -107,6 +107,24 @@ Evening:  ./infra/scripts/stop-dev.sh
 
 ## Editing Code
 
+### Option A: VS Code Remote SSH (recommended)
+
+Add to `~/.ssh/config` on your local machine:
+```
+Host aa-zklora-dev
+    HostName aa-zklora-dev
+    User ext_adas2133_colorado_edu
+    IdentityFile ~/.ssh/google_compute_engine
+    ProxyCommand gcloud compute start-iap-tunnel %h 22 --listen-on-stdin --zone=us-central1-a --project=gbc-oit-rc-basil-app-bo
+```
+
+Then in VS Code:
+1. Install the "Remote - SSH" extension
+2. Cmd+Shift+P -> "Remote-SSH: Connect to Host..." -> select `aa-zklora-dev`
+3. Open folder -> `~/zklora-punica-mvp`
+
+### Option B: Terminal SSH
+
 SSH into the VM:
 ```bash
 ./infra/scripts/ssh-instance.sh
