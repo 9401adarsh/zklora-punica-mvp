@@ -138,6 +138,17 @@ On the VM, the repo is at `~/zklora-punica-mvp/`. Edit any of:
 
 All changes are live inside the container. No rebuild needed.
 
+### Running code inside the container
+
+`start-dev.sh` is a LOCAL script only -- do not run it from the VM.
+If you are already on the VM (via VS Code or SSH), use Docker directly:
+
+```bash
+cd ~/zklora-punica-mvp/infra/docker
+docker compose up -d dev            # start container (if not running)
+docker exec -it aa-zklora-dev bash  # shell into container
+```
+
 ## Extended Break (>1 week)
 
 ```bash
