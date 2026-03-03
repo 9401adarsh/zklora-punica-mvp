@@ -17,8 +17,8 @@ RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 1
 # -- python base deps ----------------------------------------------------------
 RUN pip install --upgrade pip setuptools wheel
 
-# PyTorch with CUDA 12.1
-RUN pip install torch==2.4.0 torchvision==0.19.0 \
+# PyTorch with CUDA 12.1 (Punica requires 2.1.x)
+RUN pip install torch==2.1.2 torchvision==0.16.2 \
     --index-url https://download.pytorch.org/whl/cu121
 
 # -- ezkl ---------------------------------------------------------------------
@@ -27,6 +27,8 @@ RUN pip install ezkl onnx onnxruntime
 # -- punica --------------------------------------------------------------------
 # Install Punica from source -- required for custom SGMV CUDA kernels
 # Cloned from fork; at runtime, volume-mounted for live editing.
+# TORCH_CUDA_ARCH_LIST needed because docker build has no GPU for auto-detection
+ENV TORCH_CUDA_ARCH_LIST="7.5;8.0"
 WORKDIR /opt
 RUN git clone https://github.com/9401adarsh/punica.git \
     && cd punica && git checkout 591b59899f0a20760821785d06b331c8a2e5cb86
