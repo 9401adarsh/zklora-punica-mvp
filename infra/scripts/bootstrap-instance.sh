@@ -63,7 +63,7 @@ echo ""
 echo "Building docker image on instance (this will take 10-15 minutes)..."
 gcloud compute ssh "$INSTANCE_NAME" --zone="$ZONE" --command="
   cd ${REMOTE_DIR}/infra/docker
-  docker build -t aa-zklora-dev:latest . 2>&1 | tail -20
+  docker build --progress=plain -t aa-zklora-dev:latest .
 "
 echo "[OK] Docker image built"
 

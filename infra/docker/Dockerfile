@@ -29,11 +29,13 @@ RUN pip install ezkl onnx onnxruntime
 # Cloned from fork; at runtime, volume-mounted for live editing.
 # TORCH_CUDA_ARCH_LIST needed because docker build has no GPU for auto-detection
 ENV TORCH_CUDA_ARCH_LIST="7.5;8.0"
+RUN pip install ninja numpy
 WORKDIR /opt
 RUN git clone https://github.com/9401adarsh/punica.git \
-    && cd punica && git checkout 591b59899f0a20760821785d06b331c8a2e5cb86
+    && cd punica && git checkout 591b59899f0a20760821785d06b331c8a2e5cb86 \
+    && git submodule sync && git submodule update --init
 WORKDIR /opt/punica
-RUN pip install -e ".[dev]"
+RUN pip install -v --no-build-isolation -e ".[dev]"
 
 # -- zkLoRA --------------------------------------------------------------------
 # Cloned from fork; at runtime, volume-mounted for live editing.
