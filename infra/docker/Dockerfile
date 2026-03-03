@@ -1,0 +1,66 @@
+FROM nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04
+
+# -- system deps ---------------------------------------------------------------
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y \
+    python3.10 python3.10-dev python3-pip \
+    git curl wget build-essential cmake \
+    ninja-build pkg-config libssl-dev \
+    libffi-dev libblas-dev liblapack-dev \
+    screen tmux htop nvtop \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 1 \
+    && update-alternatives --install /usr/bin/python  python  /usr/bin/python3.10 1 \
+    && update-alternatives --install /usr/bin/pip     pip     /usr/bin/pip3       1
+
+# -- python base deps ----------------------------------------------------------
+RUN pip install --upgrade pip setuptools wheel
+
+# PyTorch with CUDA 11.8
+RUN pip install torch==2.1.0+cu118 torchvision==0.16.0+cu118 \
+    --extra-index-url https://download.pytorch.org/whl/cu118
+
+# -- ezkl ---------------------------------------------------------------------
+RUN pip install ezkl onnx onnxruntime
+
+# -- punica --------------------------------------------------------------------
+# Install Punica from source -- required for custom SGMV CUDA kernels
+# Cloned from fork; at runtime, volume-mounted for live editing.
+WORKDIR /opt
+RUN git clone https://github.com/9401adarsh/punica.git \
+    && cd punica && git checkout 591b59899f0a20760821785d06b331c8a2e5cb86
+WORKDIR /opt/punica
+RUN pip install -e ".[dev]"
+
+# -- zkLoRA --------------------------------------------------------------------
+# Cloned from fork; at runtime, volume-mounted for live editing.
+WORKDIR /opt
+RUN git clone https://github.com/9401adarsh/zkLoRA.git \
+    && cd zkLoRA && git checkout cfdf3179f1ee3954b3fd4cc78f6d82060d57a347
+WORKDIR /opt/zkLoRA
+RUN pip install -e .
+
+# -- general ML + dev deps -----------------------------------------------------
+RUN pip install \
+    transformers==4.36.0 \
+    accelerate \
+    peft \
+    datasets \
+    numpy pandas scipy \
+    matplotlib seaborn \
+    jupyter jupyterlab \
+    ipywidgets \
+    tqdm rich \
+    fastapi uvicorn \
+    aiofiles \
+    pytest pytest-asyncio
+
+# -- workspace -----------------------------------------------------------------
+WORKDIR /workspace
+ENV PYTHONPATH=/workspace/src:/opt/punica:/opt/zkLoRA
+
+# expose jupyter
+EXPOSE 8888
+
+CMD ["/bin/bash"]
