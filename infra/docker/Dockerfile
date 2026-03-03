@@ -27,8 +27,9 @@ RUN pip install ezkl onnx onnxruntime
 # -- punica --------------------------------------------------------------------
 # Install Punica from source -- required for custom SGMV CUDA kernels
 # Cloned from fork; at runtime, volume-mounted for live editing.
-# TORCH_CUDA_ARCH_LIST needed because docker build has no GPU for auto-detection
-ENV TORCH_CUDA_ARCH_LIST="7.5;8.0"
+# TORCH_CUDA_ARCH_LIST: T4 (7.5) lacks bf16 intrinsics that Punica needs.
+# Compile for 8.0 (A100) only. Use --a100 flag for SGMV kernel runs.
+ENV TORCH_CUDA_ARCH_LIST="8.0"
 RUN pip install ninja numpy
 WORKDIR /opt
 RUN git clone https://github.com/9401adarsh/punica.git \
