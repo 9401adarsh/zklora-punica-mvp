@@ -70,6 +70,22 @@ This will:
 4. Build the Docker image (~10-15 min)
 5. Verify GPU is accessible inside the container
 
+## GPU Note: T4 vs A100
+
+Punica's CUDA kernels (SGMV, BGMV) are compiled for sm_80 (A100) only.
+T4 (sm_75) lacks bfloat16 intrinsics that Punica requires at compile time.
+
+- T4 (~$0.95/hr) -- use for Python-level dev: hooks, prover, registry, tests
+- A100 (~$3.67/hr) -- use when running actual SGMV kernels or taking measurements
+
+To switch to A100:
+```bash
+./infra/scripts/stop-dev.sh --hard
+# Delete current instance and recreate with A100
+./infra/scripts/create-instance.sh --a100
+./infra/scripts/bootstrap-instance.sh
+```
+
 ## Start Working
 
 ```bash
