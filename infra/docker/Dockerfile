@@ -44,7 +44,7 @@ WORKDIR /opt
 RUN git clone https://github.com/9401adarsh/zkLoRA.git \
     && cd zkLoRA && git checkout cfdf3179f1ee3954b3fd4cc78f6d82060d57a347
 WORKDIR /opt/zkLoRA
-RUN pip install -e .
+# No setup.py/pyproject.toml -- added to PYTHONPATH instead
 
 # -- general ML + dev deps -----------------------------------------------------
 RUN pip install \
