@@ -1,0 +1,6 @@
+[submodule "punica"]
+	path = punica
+	url = git@github.com:9401adarsh/punica.git
+[submodule "zklora"]
+	path = zklora
+	url = git@github.com:9401adarsh/zkLoRA.git
