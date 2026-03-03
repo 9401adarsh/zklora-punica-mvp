@@ -31,6 +31,32 @@ chmod +x infra/scripts/*.sh
 # Wait ~3 minutes for startup script to finish
 ```
 
+## Set Up SSH Key on VM (one time)
+
+The repo is private, so the VM needs SSH access to GitHub.
+
+```bash
+# SSH into the VM
+./infra/scripts/ssh-instance.sh
+
+# On the VM: generate an SSH key
+ssh-keygen -t ed25519 -C "zklora-vm" -N "" -f ~/.ssh/id_ed25519
+
+# Show the public key -- copy this
+cat ~/.ssh/id_ed25519.pub
+
+# Exit back to local
+exit
+```
+
+Then add the key as a deploy key:
+1. Go to https://github.com/9401adarsh/zklora-punica-mvp/settings/keys
+2. Click "Add deploy key"
+3. Paste the public key, name it `zklora-vm`, check "Allow write access"
+
+Note: after a reboot, you may need to re-SSH first (`nvidia-smi` needs a reboot
+after initial driver install). The bootstrap script handles the wait automatically.
+
 ## Bootstrap (one time)
 
 ```bash
@@ -39,9 +65,10 @@ chmod +x infra/scripts/*.sh
 
 This will:
 1. Wait for NVIDIA drivers and Docker to install on the VM
-2. Clone `9401adarsh/zklora-punica-mvp` (with submodules) onto the VM
-3. Build the Docker image (~10-15 min)
-4. Verify GPU is accessible inside the container
+2. Add GitHub to SSH known hosts
+3. Clone `9401adarsh/zklora-punica-mvp` (with submodules) onto the VM
+4. Build the Docker image (~10-15 min)
+5. Verify GPU is accessible inside the container
 
 ## Start Working
 

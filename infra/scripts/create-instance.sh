@@ -101,38 +101,22 @@ else
   echo "[OK] Firewall rule already exists"
 fi
 
-# -- create instance -----------------------------------------------------------
-echo "Creating instance '$INSTANCE_NAME'..."
-
-gcloud compute instances create "$INSTANCE_NAME" \
-  --project="$PROJECT" \
-  --zone="$ZONE" \
-  --machine-type="$MACHINE_TYPE" \
-  --accelerator="$ACCELERATOR" \
-  --image-family="$IMAGE_FAMILY" \
-  --image-project="$IMAGE_PROJECT" \
-  --boot-disk-size="$DISK_SIZE" \
-  --boot-disk-type="$DISK_TYPE" \
-  --network-interface=nic-type=GVNIC,stack-type=IPV4_ONLY,subnet=lmcache-subnet,no-address \
-  --metadata=enable-osconfig=TRUE,enable-oslogin=true \
-  --provisioning-model=STANDARD \
-  --service-account="790904411643-compute@developer.gserviceaccount.com" \
-  --boot-disk-device-name="$INSTANCE_NAME-disk" \
-  --maintenance-policy=TERMINATE \
-  --no-restart-on-failure \
-  --tags=aa-zklora-dev \
-  --scopes=https://www.googleapis.com/auth/cloud-platform \
-  --no-shielded-secure-boot \
-  --shielded-vtpm \
-  --shielded-integrity-monitoring \
-  --labels=goog-ops-agent-policy=v2-x86-template-1-4-0,goog-ec-src=vm_add-gcloud \
-  --reservation-affinity=any \
-  --metadata=startup-script='#!/bin/bash
+# -- create startup script tempfile ---------------------------------------------
+STARTUP_SCRIPT=$(mktemp)
+cat > "$STARTUP_SCRIPT" << 'STARTUP_EOF'
+#!/bin/bash
 set -e
+
+# Skip if already completed (idempotent across reboots)
+if command -v nvidia-smi &>/dev/null && command -v docker &>/dev/null; then
+  echo "startup-complete" > /tmp/startup-done
+  echo "[OK] Already bootstrapped, skipping"
+  exit 0
+fi
 
 # -- NVIDIA drivers ------------------------------------------------------------
 curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey \
-  | gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+  | gpg --batch --yes --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
 curl -s -L https://nvidia.github.io/libnvidia-container/stable/deb/nvidia-container-toolkit.list \
   | sed "s#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g" \
   | tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
@@ -170,7 +154,37 @@ chmod 644 /etc/cron.d/auto-shutdown
 echo "[OK] Auto-shutdown cron set for 2am daily"
 
 echo "startup-complete" > /tmp/startup-done
-'
+STARTUP_EOF
+
+# -- create instance -----------------------------------------------------------
+echo "Creating instance '$INSTANCE_NAME'..."
+
+gcloud compute instances create "$INSTANCE_NAME" \
+  --project="$PROJECT" \
+  --zone="$ZONE" \
+  --machine-type="$MACHINE_TYPE" \
+  --accelerator="$ACCELERATOR" \
+  --image-family="$IMAGE_FAMILY" \
+  --image-project="$IMAGE_PROJECT" \
+  --boot-disk-size="$DISK_SIZE" \
+  --boot-disk-type="$DISK_TYPE" \
+  --network-interface=nic-type=GVNIC,stack-type=IPV4_ONLY,subnet=lmcache-subnet,no-address \
+  --metadata=enable-osconfig=TRUE,enable-oslogin=true \
+  --metadata-from-file=startup-script="$STARTUP_SCRIPT" \
+  --provisioning-model=STANDARD \
+  --service-account="790904411643-compute@developer.gserviceaccount.com" \
+  --boot-disk-device-name="$INSTANCE_NAME-disk" \
+  --maintenance-policy=TERMINATE \
+  --no-restart-on-failure \
+  --tags=aa-zklora-dev \
+  --scopes=https://www.googleapis.com/auth/cloud-platform \
+  --no-shielded-secure-boot \
+  --shielded-vtpm \
+  --shielded-integrity-monitoring \
+  --labels=goog-ops-agent-policy=v2-x86-template-1-4-0,goog-ec-src=vm_add-gcloud \
+  --reservation-affinity=any
+
+rm -f "$STARTUP_SCRIPT"
 
 echo "[OK] Instance created."
 echo ""

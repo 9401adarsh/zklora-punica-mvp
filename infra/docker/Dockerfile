@@ -1,4 +1,4 @@
-FROM nvidia/cuda:11.8.0-cudnn8-devel-ubuntu22.04
+FROM nvidia/cuda:12.1.1-cudnn8-devel-ubuntu22.04
 
 # -- system deps ---------------------------------------------------------------
 ENV DEBIAN_FRONTEND=noninteractive
@@ -17,9 +17,9 @@ RUN update-alternatives --install /usr/bin/python3 python3 /usr/bin/python3.10 1
 # -- python base deps ----------------------------------------------------------
 RUN pip install --upgrade pip setuptools wheel
 
-# PyTorch with CUDA 11.8
-RUN pip install torch==2.1.0+cu118 torchvision==0.16.0+cu118 \
-    --extra-index-url https://download.pytorch.org/whl/cu118
+# PyTorch with CUDA 12.1
+RUN pip install torch==2.4.0 torchvision==0.19.0 \
+    --index-url https://download.pytorch.org/whl/cu121
 
 # -- ezkl ---------------------------------------------------------------------
 RUN pip install ezkl onnx onnxruntime

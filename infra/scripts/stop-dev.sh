@@ -18,7 +18,7 @@ set -euo pipefail
 
 INSTANCE_NAME="aa-zklora-dev"
 ZONE="us-central1-a"
-REMOTE_DIR="/home/$USER/zklora-punica-mvp"
+REMOTE_DIR="zklora-punica-mvp"
 
 SOFT=false
 for arg in "$@"; do
