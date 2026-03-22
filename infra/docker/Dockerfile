@@ -63,7 +63,7 @@ RUN pip install \
 
 # -- workspace -----------------------------------------------------------------
 WORKDIR /workspace
-ENV PYTHONPATH=/workspace/src:/opt/punica:/opt/zkLoRA
+ENV PYTHONPATH=/workspace:/workspace/src:/workspace/zklora/src:/opt/punica:/opt/zkLoRA/src:/opt/zkLoRA
 
 # expose jupyter
 EXPOSE 8888

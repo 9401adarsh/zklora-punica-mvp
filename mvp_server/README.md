@@ -26,9 +26,29 @@ python3 -m mvp_server.proof.prover_worker
 - Inference defaults to GPU (`inference_device=cuda`).
 - Sampled requests are persisted under `{artifacts_root}/witness/<request_id>/<module_id>/`.
 - A pointer-only proof job is appended to the manifest.
-- Worker transitions proof status: `queued -> pending -> ready|failed`.
+- Worker (separate async process) transitions proof status: `queued -> pending -> ready|failed`.
 - Unsampled requests are `not_sampled`.
 - Persistence/enqueue failures are marked `dropped_overload`.
+
+## Phase-4 Proof Artifacts (Single Adapter)
+
+- Real ZKLoRA proof generation is enabled in the worker adapter path.
+- Proof outputs are written under `{artifacts_root}/proofs/<request_id>/<module_id>/`.
+- Minimum expected outputs for a successful proof:
+  - one proof artifact (`*.pf`)
+  - one verification/settings artifact (`*_settings.json` or `*.vk`)
+- Worker status and API response shapes remain backward compatible.
+
+## Troubleshooting
+
+- `ImportError` for `peft`, `onnxruntime`, or `ezkl`:
+  - ensure dev container dependencies are installed and `PYTHONPATH` includes `zkLoRA` sources.
+- `resolve_module` failures:
+  - verify `target_module_path` maps to a LoRA-enabled submodule for the configured adapter.
+- `export` failures:
+  - validate witness `x_ref` exists and contains expected tensor shape for the target module.
+- `prove` failures:
+  - inspect per-job proof directory under `{artifacts_root}/proofs/<request_id>/<module_id>/` for generated ONNX/JSON artifacts.
 
 ## Config (Env)
 

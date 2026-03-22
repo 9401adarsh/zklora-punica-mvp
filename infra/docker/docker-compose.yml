@@ -25,7 +25,7 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-      - PYTHONPATH=/workspace/src:/opt/punica:/opt/zkLoRA
+      - PYTHONPATH=/workspace:/workspace/src:/workspace/zklora/src:/opt/punica:/opt/zkLoRA/src:/opt/zkLoRA
       - JUPYTER_TOKEN=${JUPYTER_TOKEN:-zklora}
     volumes:
       # repo root -- live-mounted, all your code is here
@@ -58,7 +58,7 @@ services:
     environment:
       - NVIDIA_VISIBLE_DEVICES=all
       - NVIDIA_DRIVER_CAPABILITIES=compute,utility
-      - PYTHONPATH=/workspace/src:/opt/punica:/opt/zkLoRA
+      - PYTHONPATH=/workspace:/workspace/src:/workspace/zklora/src:/opt/punica:/opt/zkLoRA/src:/opt/zkLoRA
       - JUPYTER_TOKEN=${JUPYTER_TOKEN:-zklora}
     volumes:
       - ../../:/workspace

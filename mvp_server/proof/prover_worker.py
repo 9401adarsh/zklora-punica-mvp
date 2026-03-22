@@ -71,7 +71,11 @@ def build_worker_from_config(config: AppConfig) -> ProverWorker:
         claims_path=config.resolved_proof_claims_path(),
     )
     proof_store = ProofStore(path=config.resolved_proof_store_path())
-    adapter = ZkLoraAdapter(artifacts_root=config.artifacts_root)
+    adapter = ZkLoraAdapter(
+        artifacts_root=config.artifacts_root,
+        base_model_id=config.base_model_id,
+        adapter_id=config.adapter_id,
+    )
     return ProverWorker(manifest=manifest, proof_store=proof_store, adapter=adapter)
 
 

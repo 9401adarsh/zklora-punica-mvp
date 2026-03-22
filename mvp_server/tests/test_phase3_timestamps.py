@@ -3,7 +3,7 @@ import numpy as np
 from mvp_server.api.server import MVPServer
 from mvp_server.config import AppConfig
 from mvp_server.proof.prover_worker import ProverWorker
-from mvp_server.proof.zklora_adapter import ZkLoraAdapter
+from mvp_server.proof.zklora_adapter import ProveResult
 from mvp_server.runtime.model_runtime import InferenceResult
 
 
@@ -23,6 +23,15 @@ class FakeRuntime:
         )
 
 
+class ReadyAdapter:
+    def prove(self, _job):
+        return ProveResult(
+            proof_ref="/tmp/proof.pf",
+            public_ref="/tmp/proof_settings.json",
+            duration_ms=1.0,
+        )
+
+
 def test_lifecycle_timestamps_sampled_ready(tmp_path) -> None:
     cfg = AppConfig.from_dict({"artifacts_root": str(tmp_path)})
     server = MVPServer(config=cfg, runtime=FakeRuntime())
@@ -33,7 +42,7 @@ def test_lifecycle_timestamps_sampled_ready(tmp_path) -> None:
     worker = ProverWorker(
         manifest=server.proof_manifest,
         proof_store=server.proof_store,
-        adapter=ZkLoraAdapter(str(tmp_path)),
+        adapter=ReadyAdapter(),
     )
     assert worker.run_once()
 
