@@ -17,6 +17,10 @@ class ProveResult:
     proof_ref: str
     public_ref: str
     duration_ms: float
+    stage_setup_s: float | None = None
+    stage_witness_s: float | None = None
+    stage_prove_s: float | None = None
+    stage_total_s: float | None = None
 
 
 class ZkLoraAdapter:
@@ -27,13 +31,19 @@ class ZkLoraAdapter:
         artifacts_root: str,
         base_model_id: str = "distilgpt2",
         adapter_id: str = "ng0-k1/distilgpt2-finetuned-es",
+        prover_backend: str = "cpu",
         model_loader: Any | None = None,
         exporter: Any | None = None,
         prove_runner: Any | None = None,
     ) -> None:
+        backend = str(prover_backend).strip().lower()
+        if backend not in {"cpu", "gpu"}:
+            raise ValueError("prover_backend must be one of {cpu, gpu}")
+
         self.artifacts_root = Path(artifacts_root)
         self.base_model_id = base_model_id
         self.adapter_id = adapter_id
+        self.prover_backend = backend
         self._peft_model: Any | None = None
         self._model_loader = model_loader
         self._exporter = exporter
@@ -106,6 +116,42 @@ class ZkLoraAdapter:
         if last_error is None:
             raise RuntimeError("no module names provided")
         raise last_error
+
+    @staticmethod
+    def _supports_kwargs(fn: Any, name: str) -> bool:
+        try:
+            signature = inspect.signature(fn)
+        except (TypeError, ValueError):
+            return False
+        if name in signature.parameters:
+            return True
+        return any(
+            param.kind == inspect.Parameter.VAR_KEYWORD
+            for param in signature.parameters.values()
+        )
+
+    @staticmethod
+    def _is_signature_type_error(exc: TypeError) -> bool:
+        text = str(exc)
+        return (
+            "unexpected keyword argument" in text
+            or "required positional argument" in text
+            or "positional arguments but" in text
+        )
+
+    def _ensure_gpu_runtime_available(self) -> None:
+        if self.prover_backend != "gpu":
+            return
+        try:
+            import torch
+        except Exception as exc:  # pragma: no cover - environment dependent
+            raise RuntimeError(
+                "gpu backend requested but torch is unavailable"
+            ) from exc
+        if not torch.cuda.is_available():
+            raise RuntimeError(
+                "gpu backend requested but CUDA runtime is unavailable"
+            )
 
     def _load_witness_inputs(self, job: Any) -> tuple[Any, dict[str, Any]]:
         witness_ref = Path(str(self._job_value(job, "witness_ref")))
@@ -183,35 +229,69 @@ class ZkLoraAdapter:
         if not list(proof_dir.glob("*.json")):
             raise ValueError("expected at least one JSON artifact after export")
 
-    def _run_zklora_prove(self, proof_dir: Path, setup_dir: Path) -> None:
+    def _run_zklora_prove(
+        self, proof_dir: Path, setup_dir: Path
+    ) -> dict[str, float] | None:
+        self._ensure_gpu_runtime_available()
+
         if self._prove_runner is None:
             prove_mod = self._import_any(("zklora.zk_proof_generator",))
             self._prove_runner = getattr(prove_mod, "generate_proofs")
 
+        kwargs: dict[str, Any] = {
+            "onnx_dir": str(proof_dir),
+            "json_dir": str(proof_dir),
+            "output_dir": str(proof_dir),
+            "verbose": False,
+        }
+        if self._supports_kwargs(self._prove_runner, "setup_dir"):
+            kwargs["setup_dir"] = str(setup_dir)
+        if self._supports_kwargs(self._prove_runner, "backend"):
+            kwargs["backend"] = self.prover_backend
+
+        result: Any
         try:
-            result = self._prove_runner(
-                onnx_dir=str(proof_dir),
-                json_dir=str(proof_dir),
-                output_dir=str(proof_dir),
-                setup_dir=str(setup_dir),
-                verbose=False,
-            )
-        except TypeError as exc:
-            if "setup_dir" not in str(exc):
+            result = self._prove_runner(**kwargs)
+        except TypeError as first_exc:
+            if not self._is_signature_type_error(first_exc):
                 raise
-            result = self._prove_runner(
-                onnx_dir=str(proof_dir),
-                json_dir=str(proof_dir),
-                output_dir=str(proof_dir),
-                verbose=False,
-            )
+            fallback_kwargs = {
+                "onnx_dir": str(proof_dir),
+                "json_dir": str(proof_dir),
+                "output_dir": str(proof_dir),
+                "setup_dir": str(setup_dir),
+                "verbose": False,
+            }
+            try:
+                result = self._prove_runner(**fallback_kwargs)
+            except TypeError as second_exc:
+                if not self._is_signature_type_error(second_exc):
+                    raise
+                result = self._prove_runner(
+                    onnx_dir=str(proof_dir),
+                    json_dir=str(proof_dir),
+                    output_dir=str(proof_dir),
+                    verbose=False,
+                )
 
         if inspect.isawaitable(result):
             result = asyncio.run(result)
         if result is None:
             raise RuntimeError("proof generation returned no result")
-        if isinstance(result, tuple) and len(result) >= 5 and int(result[-1]) < 1:
-            raise RuntimeError("proof generation produced zero proofs")
+        stage_timings: dict[str, float] | None = None
+        if isinstance(result, tuple) and len(result) >= 5:
+            if int(result[-1]) < 1:
+                raise RuntimeError("proof generation produced zero proofs")
+            setup_s = float(result[0])
+            witness_s = float(result[1])
+            prove_s = float(result[2])
+            stage_timings = {
+                "setup_s": setup_s,
+                "witness_s": witness_s,
+                "prove_s": prove_s,
+                "total_s": setup_s + witness_s + prove_s,
+            }
+        return stage_timings
 
     def _collect_proof_refs(self, proof_dir: Path, setup_dir: Path) -> tuple[str, str]:
         proof_files = sorted(proof_dir.glob("*.pf"))
@@ -256,7 +336,7 @@ class ZkLoraAdapter:
             raise RuntimeError(f"export: {exc}") from exc
 
         try:
-            self._run_zklora_prove(proof_dir, setup_dir)
+            stage_timings = self._run_zklora_prove(proof_dir, setup_dir)
         except Exception as exc:
             raise RuntimeError(f"prove: {exc}") from exc
 
@@ -269,4 +349,10 @@ class ZkLoraAdapter:
             proof_ref=proof_ref,
             public_ref=public_ref,
             duration_ms=(perf_counter() - start) * 1000.0,
+            stage_setup_s=None if stage_timings is None else stage_timings["setup_s"],
+            stage_witness_s=None
+            if stage_timings is None
+            else stage_timings["witness_s"],
+            stage_prove_s=None if stage_timings is None else stage_timings["prove_s"],
+            stage_total_s=None if stage_timings is None else stage_timings["total_s"],
         )

@@ -22,7 +22,9 @@ RUN pip install torch==2.1.2 torchvision==0.16.2 \
     --index-url https://download.pytorch.org/whl/cu121
 
 # -- ezkl ---------------------------------------------------------------------
-RUN pip install ezkl onnx onnxruntime
+# Default keeps CPU-capable package; override at build-time for GPU-capable wheel path.
+ARG EZKL_PYPI_PACKAGE=ezkl
+RUN pip install "${EZKL_PYPI_PACKAGE}" onnx onnxruntime
 
 # -- punica --------------------------------------------------------------------
 # Install Punica from source -- required for custom SGMV CUDA kernels

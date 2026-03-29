@@ -8,6 +8,8 @@ def test_default_config_is_valid() -> None:
     assert cfg.base_model_id == "distilgpt2"
     assert cfg.proof_mode == "every_request"
     assert cfg.sample_n is None
+    assert cfg.prover_backend == "cpu"
+    assert cfg.proof_worker_threads == 2
     assert cfg.inference_device == "cuda"
     assert cfg.artifacts_root == "/artifacts"
 
@@ -22,6 +24,16 @@ def test_every_request_rejects_sample_n() -> None:
         AppConfig.from_dict({"proof_mode": "every_request", "sample_n": 4})
 
 
+def test_gpu_backend_is_allowed() -> None:
+    cfg = AppConfig.from_dict({"prover_backend": "gpu"})
+    assert cfg.prover_backend == "gpu"
+
+
+def test_invalid_backend_is_rejected() -> None:
+    with pytest.raises(ValueError, match="prover_backend"):
+        AppConfig.from_dict({"prover_backend": "tpu"})
+
+
 def test_resolved_paths_use_artifacts_root() -> None:
     cfg = AppConfig.from_dict({"artifacts_root": "/tmp/a"})
     assert cfg.resolved_proof_manifest_path() == "/tmp/a/proof/proof_jobs.jsonl"
@@ -32,6 +44,11 @@ def test_resolved_paths_use_artifacts_root() -> None:
 def test_worker_poll_interval_must_be_positive() -> None:
     with pytest.raises(ValueError, match="worker_poll_interval_ms"):
         AppConfig.from_dict({"worker_poll_interval_ms": 0})
+
+
+def test_proof_worker_threads_must_be_positive() -> None:
+    with pytest.raises(ValueError, match="proof_worker_threads"):
+        AppConfig.from_dict({"proof_worker_threads": 0})
 
 
 def test_inference_device_must_be_supported() -> None:

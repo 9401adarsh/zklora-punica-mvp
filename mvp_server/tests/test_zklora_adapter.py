@@ -1,4 +1,5 @@
 import json
+import sys
 from pathlib import Path
 
 import numpy as np
@@ -206,3 +207,115 @@ def test_zklora_adapter_prove_failure_is_stage_prefixed(tmp_path: Path) -> None:
                 "witness_ref": witness_ref,
             }
         )
+
+
+def test_zklora_adapter_backend_is_forwarded_when_supported(tmp_path: Path) -> None:
+    module_id = "transformer.h.0.attn.c_attn"
+    request_id = "r_backend"
+    witness_ref = _write_witness(tmp_path, request_id=request_id, module_id=module_id)
+
+    observed_backend = {"value": None}
+
+    def fake_export(sub_name, x_data, submodule, output_dir, verbose):
+        _ = (x_data, submodule, verbose)
+        safe_name = sub_name.replace(".", "_").replace("/", "_")
+        Path(output_dir, f"{safe_name}.onnx").write_bytes(b"onnx")
+        Path(output_dir, f"{safe_name}.json").write_text(
+            json.dumps({"input_data": [[1.0]]}),
+            encoding="utf-8",
+        )
+
+    async def fake_generate_proofs(
+        onnx_dir, json_dir, output_dir, setup_dir, backend, verbose
+    ):
+        _ = (onnx_dir, json_dir, setup_dir, verbose)
+        observed_backend["value"] = backend
+        Path(output_dir, "transformer_h_0_attn_c_attn.pf").write_text(
+            "proof",
+            encoding="utf-8",
+        )
+        Path(output_dir, "transformer_h_0_attn_c_attn_settings.json").write_text(
+            json.dumps({"k": 20}),
+            encoding="utf-8",
+        )
+        return (0.1, 0.1, 0.1, 10, 1)
+
+    adapter = ZkLoraAdapter(
+        artifacts_root=str(tmp_path),
+        prover_backend="cpu",
+        model_loader=lambda _base_model_id, _adapter_id: FakePeftModel(with_target=True),
+        exporter=fake_export,
+        prove_runner=fake_generate_proofs,
+    )
+
+    result = adapter.prove(
+        {
+            "request_id": request_id,
+            "module_id": module_id,
+            "witness_ref": witness_ref,
+        }
+    )
+
+    assert result.proof_ref.endswith(".pf")
+    assert observed_backend["value"] == "cpu"
+    assert result.stage_setup_s == pytest.approx(0.1)
+    assert result.stage_witness_s == pytest.approx(0.1)
+    assert result.stage_prove_s == pytest.approx(0.1)
+    assert result.stage_total_s == pytest.approx(0.3)
+
+
+def test_zklora_adapter_gpu_backend_fails_fast_without_cuda(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_id = "transformer.h.0.attn.c_attn"
+    request_id = "r_gpu"
+    witness_ref = _write_witness(tmp_path, request_id=request_id, module_id=module_id)
+
+    class FakeCuda:
+        @staticmethod
+        def is_available() -> bool:
+            return False
+
+    class FakeTorch:
+        cuda = FakeCuda()
+
+    monkeypatch.setitem(sys.modules, "torch", FakeTorch())
+
+    called = {"value": False}
+
+    def fake_export(sub_name, x_data, submodule, output_dir, verbose):
+        _ = (x_data, submodule, verbose)
+        safe_name = sub_name.replace(".", "_").replace("/", "_")
+        Path(output_dir, f"{safe_name}.onnx").write_bytes(b"onnx")
+        Path(output_dir, f"{safe_name}.json").write_text(
+            json.dumps({"input_data": [[1.0]]}),
+            encoding="utf-8",
+        )
+
+    async def fake_generate_proofs(**_kwargs):
+        called["value"] = True
+        return (0.1, 0.1, 0.1, 10, 1)
+
+    adapter = ZkLoraAdapter(
+        artifacts_root=str(tmp_path),
+        prover_backend="gpu",
+        model_loader=lambda _base_model_id, _adapter_id: FakePeftModel(with_target=True),
+        exporter=fake_export,
+        prove_runner=fake_generate_proofs,
+    )
+
+    with pytest.raises(RuntimeError, match="^prove: gpu backend requested"):
+        adapter.prove(
+            {
+                "request_id": request_id,
+                "module_id": module_id,
+                "witness_ref": witness_ref,
+            }
+        )
+    assert called["value"] is False
+
+
+def test_zklora_adapter_rejects_invalid_backend(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="prover_backend"):
+        ZkLoraAdapter(artifacts_root=str(tmp_path), prover_backend="tpu")

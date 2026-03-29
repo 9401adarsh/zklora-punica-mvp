@@ -15,6 +15,7 @@ class AppConfig:
     proof_mode: str = "every_request"
     sample_n: Optional[int] = None
     prover_backend: str = "cpu"
+    proof_worker_threads: int = 2
     inference_device: str = "cuda"
     hash_schema_version: int = 1
     artifacts_root: str = "/artifacts"
@@ -35,6 +36,9 @@ class AppConfig:
             proof_mode=str(data.get("proof_mode", cls.proof_mode)),
             sample_n=data.get("sample_n", cls.sample_n),
             prover_backend=str(data.get("prover_backend", cls.prover_backend)),
+            proof_worker_threads=int(
+                data.get("proof_worker_threads", cls.proof_worker_threads)
+            ),
             inference_device=str(data.get("inference_device", cls.inference_device)),
             hash_schema_version=int(
                 data.get("hash_schema_version", cls.hash_schema_version)
@@ -64,6 +68,9 @@ class AppConfig:
             "proof_mode": os.getenv("MVP_PROOF_MODE", cls.proof_mode),
             "sample_n": sample_n,
             "prover_backend": os.getenv("MVP_PROVER_BACKEND", cls.prover_backend),
+            "proof_worker_threads": int(
+                os.getenv("MVP_PROOF_WORKER_THREADS", str(cls.proof_worker_threads))
+            ),
             "inference_device": os.getenv("MVP_INFERENCE_DEVICE", cls.inference_device),
             "hash_schema_version": int(
                 os.getenv("MVP_HASH_SCHEMA_VERSION", str(cls.hash_schema_version))
@@ -106,8 +113,10 @@ class AppConfig:
             raise ValueError("sample_n must be >= 1 when proof_mode=sampled")
         if self.proof_mode == "every_request" and self.sample_n is not None:
             raise ValueError("sample_n must be unset when proof_mode=every_request")
-        if self.prover_backend != "cpu":
-            raise ValueError("prover_backend must be cpu in phase 1")
+        if self.prover_backend not in {"cpu", "gpu"}:
+            raise ValueError("prover_backend must be one of {cpu, gpu}")
+        if self.proof_worker_threads < 1:
+            raise ValueError("proof_worker_threads must be >= 1")
         if self.inference_device not in {"cuda", "cpu"}:
             raise ValueError("inference_device must be one of {cuda, cpu}")
         if self.hash_schema_version != 1:

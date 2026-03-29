@@ -26,7 +26,9 @@ python3 -m mvp_server.proof.prover_worker
 - Inference defaults to GPU (`inference_device=cuda`).
 - Sampled requests are persisted under `{artifacts_root}/witness/<request_id>/<module_id>/`.
 - A pointer-only proof job is appended to the manifest.
-- Worker (separate async process) transitions proof status: `queued -> pending -> ready|failed`.
+- Worker transitions proof status: `queued -> pending -> ready|failed`.
+- Worker concurrency uses a thread pool controlled by `proof_worker_threads`.
+- Prover backend is selected by `prover_backend` (`cpu|gpu`).
 - Unsampled requests are `not_sampled`.
 - Persistence/enqueue failures are marked `dropped_overload`.
 
@@ -49,6 +51,8 @@ python3 -m mvp_server.proof.prover_worker
   - validate witness `x_ref` exists and contains expected tensor shape for the target module.
 - `prove` failures:
   - inspect per-job proof directory under `{artifacts_root}/proofs/<request_id>/<module_id>/` for generated ONNX/JSON artifacts.
+- `gpu backend requested` failures:
+  - verify CUDA is available in the worker runtime and rebuild with a GPU-capable EZKL package.
 
 ## Config (Env)
 
@@ -57,6 +61,9 @@ python3 -m mvp_server.proof.prover_worker
 export MVP_INFERENCE_DEVICE=cuda
 export MVP_ARTIFACTS_ROOT=/artifacts
 export MVP_WORKER_POLL_INTERVAL_MS=250
+export MVP_PROVER_BACKEND=cpu
+export MVP_PROOF_WORKER_THREADS=2
+
 # optional explicit overrides
 # export MVP_PROOF_MANIFEST_PATH=/artifacts/proof/proof_jobs.jsonl
 # export MVP_PROOF_CLAIMS_PATH=/artifacts/proof/proof_claims.jsonl
