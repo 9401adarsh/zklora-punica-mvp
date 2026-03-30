@@ -24,6 +24,7 @@ RUN pip install torch==2.1.2 torchvision==0.16.2 \
 # -- ezkl ---------------------------------------------------------------------
 # Default keeps CPU-capable package; override at build-time for GPU-capable wheel path.
 ARG EZKL_PYPI_PACKAGE=ezkl
+LABEL aa.ezkl_pypi_package="${EZKL_PYPI_PACKAGE}"
 RUN pip install "${EZKL_PYPI_PACKAGE}" onnx onnxruntime
 
 # -- punica --------------------------------------------------------------------

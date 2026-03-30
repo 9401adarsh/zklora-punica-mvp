@@ -319,3 +319,177 @@ def test_zklora_adapter_gpu_backend_fails_fast_without_cuda(
 def test_zklora_adapter_rejects_invalid_backend(tmp_path: Path) -> None:
     with pytest.raises(ValueError, match="prover_backend"):
         ZkLoraAdapter(artifacts_root=str(tmp_path), prover_backend="tpu")
+
+
+def test_zklora_adapter_setup_cache_hits_after_first_build(tmp_path: Path) -> None:
+    module_id = "transformer.h.0.attn.c_attn"
+    cache_root = tmp_path / "setup-cache"
+
+    witness_ref_1 = _write_witness(tmp_path, request_id="r-cache-1", module_id=module_id)
+    witness_ref_2 = _write_witness(tmp_path, request_id="r-cache-2", module_id=module_id)
+
+    observed_pk_exists: list[bool] = []
+    observed_setup_dirs: list[str] = []
+
+    def fake_export(sub_name, x_data, submodule, output_dir, verbose):
+        _ = (x_data, submodule, verbose)
+        safe_name = sub_name.replace(".", "_").replace("/", "_")
+        Path(output_dir, f"{safe_name}.onnx").write_bytes(b"onnx")
+        Path(output_dir, f"{safe_name}.json").write_text(
+            json.dumps({"input_data": [[1.0]]}),
+            encoding="utf-8",
+        )
+
+    async def fake_generate_proofs(
+        onnx_dir,
+        json_dir,
+        output_dir,
+        setup_dir,
+        backend,
+        verbose,
+    ):
+        _ = (onnx_dir, json_dir, backend, verbose)
+        base = "transformer_h_0_attn_c_attn"
+        setup_path = Path(setup_dir)
+        setup_path.mkdir(parents=True, exist_ok=True)
+        observed_pk_exists.append((setup_path / f"{base}.pk").exists())
+        observed_setup_dirs.append(str(setup_path))
+
+        Path(setup_path, f"{base}.ezkl").write_text("circuit", encoding="utf-8")
+        Path(setup_path, f"{base}_settings.json").write_text(
+            json.dumps({"k": 20}),
+            encoding="utf-8",
+        )
+        Path(setup_path, "kzg.srs").write_text("srs", encoding="utf-8")
+        Path(setup_path, f"{base}.vk").write_text("vk", encoding="utf-8")
+        Path(setup_path, f"{base}.pk").write_text("pk", encoding="utf-8")
+
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        Path(out, f"{base}.pf").write_text("proof", encoding="utf-8")
+        return (0.1, 0.1, 0.1, 10, 1)
+
+    adapter = ZkLoraAdapter(
+        artifacts_root=str(tmp_path),
+        prover_backend="cpu",
+        model_loader=lambda _base_model_id, _adapter_id: FakePeftModel(with_target=True),
+        exporter=fake_export,
+        prove_runner=fake_generate_proofs,
+        setup_cache_root=str(cache_root),
+    )
+
+    result_1 = adapter.prove(
+        {
+            "request_id": "r-cache-1",
+            "module_id": module_id,
+            "witness_ref": witness_ref_1,
+        }
+    )
+    result_2 = adapter.prove(
+        {
+            "request_id": "r-cache-2",
+            "module_id": module_id,
+            "witness_ref": witness_ref_2,
+        }
+    )
+
+    assert result_1.setup_cache_enabled is True
+    assert result_1.setup_cache_hit is False
+    assert result_2.setup_cache_enabled is True
+    assert result_2.setup_cache_hit is True
+    assert result_1.setup_cache_key == result_2.setup_cache_key
+    assert observed_pk_exists == [False, True]
+    assert observed_setup_dirs[0] == observed_setup_dirs[1]
+    assert Path(observed_setup_dirs[0], "setup_cache_meta.json").exists()
+
+
+def test_zklora_adapter_setup_cache_fingerprint_change_forces_miss(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_id = "transformer.h.0.attn.c_attn"
+    cache_root = tmp_path / "setup-cache"
+
+    witness_ref_1 = _write_witness(tmp_path, request_id="r-fp-1", module_id=module_id)
+    witness_ref_2 = _write_witness(tmp_path, request_id="r-fp-2", module_id=module_id)
+
+    observed_setup_dirs: list[str] = []
+    observed_pk_exists: list[bool] = []
+
+    version_holder = {"value": "v1"}
+
+    def fake_ezkl_version(self) -> str:
+        return version_holder["value"]
+
+    monkeypatch.setattr(ZkLoraAdapter, "_ezkl_version", fake_ezkl_version)
+
+    def fake_export(sub_name, x_data, submodule, output_dir, verbose):
+        _ = (x_data, submodule, verbose)
+        safe_name = sub_name.replace(".", "_").replace("/", "_")
+        Path(output_dir, f"{safe_name}.onnx").write_bytes(b"onnx")
+        Path(output_dir, f"{safe_name}.json").write_text(
+            json.dumps({"input_data": [[1.0]]}),
+            encoding="utf-8",
+        )
+
+    async def fake_generate_proofs(
+        onnx_dir,
+        json_dir,
+        output_dir,
+        setup_dir,
+        backend,
+        verbose,
+    ):
+        _ = (onnx_dir, json_dir, backend, verbose)
+        base = "transformer_h_0_attn_c_attn"
+        setup_path = Path(setup_dir)
+        setup_path.mkdir(parents=True, exist_ok=True)
+        observed_setup_dirs.append(str(setup_path))
+        observed_pk_exists.append((setup_path / f"{base}.pk").exists())
+
+        Path(setup_path, f"{base}.ezkl").write_text("circuit", encoding="utf-8")
+        Path(setup_path, f"{base}_settings.json").write_text(
+            json.dumps({"k": 20}),
+            encoding="utf-8",
+        )
+        Path(setup_path, "kzg.srs").write_text("srs", encoding="utf-8")
+        Path(setup_path, f"{base}.vk").write_text("vk", encoding="utf-8")
+        Path(setup_path, f"{base}.pk").write_text("pk", encoding="utf-8")
+
+        out = Path(output_dir)
+        out.mkdir(parents=True, exist_ok=True)
+        Path(out, f"{base}.pf").write_text("proof", encoding="utf-8")
+        return (0.1, 0.1, 0.1, 10, 1)
+
+    adapter = ZkLoraAdapter(
+        artifacts_root=str(tmp_path),
+        prover_backend="cpu",
+        model_loader=lambda _base_model_id, _adapter_id: FakePeftModel(with_target=True),
+        exporter=fake_export,
+        prove_runner=fake_generate_proofs,
+        setup_cache_root=str(cache_root),
+    )
+
+    result_1 = adapter.prove(
+        {
+            "request_id": "r-fp-1",
+            "module_id": module_id,
+            "witness_ref": witness_ref_1,
+        }
+    )
+
+    version_holder["value"] = "v2"
+
+    result_2 = adapter.prove(
+        {
+            "request_id": "r-fp-2",
+            "module_id": module_id,
+            "witness_ref": witness_ref_2,
+        }
+    )
+
+    assert result_1.setup_cache_hit is False
+    assert result_2.setup_cache_hit is False
+    assert result_1.setup_cache_key != result_2.setup_cache_key
+    assert observed_pk_exists == [False, False]
+    assert observed_setup_dirs[0] != observed_setup_dirs[1]

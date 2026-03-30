@@ -20,6 +20,74 @@ python3 -m mvp_server.proof.prover_worker --max-jobs 100
 python3 -m mvp_server.proof.prover_worker
 ```
 
+## Live CLI Interaction (Two Terminals)
+
+**All commands below are executed inside the dev container at `/workspace`.**
+
+If needed, from host shell:
+
+```bash
+docker compose -f infra/docker/docker-compose.yml up -d dev
+docker compose -f infra/docker/docker-compose.yml exec dev bash
+cd /workspace
+```
+
+`MVPServer` is currently an in-process API surface (not an HTTP daemon), so live interaction is done via Python CLI.
+
+Open two terminals in the same dev container and use the same artifacts root.
+
+### Terminal A: run worker continuously
+
+```bash
+cd /workspace
+export MVP_ARTIFACTS_ROOT=/workspace/artifacts/live-cli
+export MVP_PROOF_MODE=every_request
+export MVP_PROVER_BACKEND=gpu
+export MVP_PROOF_WORKER_THREADS=1
+python3 -m mvp_server.proof.prover_worker
+```
+
+### Terminal B: interactive prompt loop
+
+```bash
+cd /workspace
+export MVP_ARTIFACTS_ROOT=/workspace/artifacts/live-cli
+export MVP_PROOF_MODE=every_request
+export MVP_PROVER_BACKEND=gpu
+
+python3 - <<'PY'
+import time
+from mvp_server.api.server import MVPServer
+from mvp_server.config import AppConfig
+
+srv = MVPServer(config=AppConfig.from_env())
+print("Type prompt text. 'quit' to exit.")
+
+while True:
+    prompt = input('prompt> ').strip()
+    if prompt in {'quit', 'exit'}:
+        break
+    if not prompt:
+        continue
+
+    resp = srv.post_infer({'prompt': prompt})
+    rid = resp['receipt']['request_id']
+    print('receipt:', resp['receipt'])
+
+    for _ in range(240):
+        code, proof = srv.get_proof(rid)
+        status = proof.get('status')
+        print('proof_status:', status, '(http-like code:', code, ')')
+        if status in {'ready', 'failed', 'not_sampled', 'dropped_overload'}:
+            break
+        time.sleep(0.5)
+PY
+```
+
+Note: both terminals must share the same `MVP_ARTIFACTS_ROOT`, and both must run inside the same container.
+
+Do not run these commands on the host shell; run both terminals in the same container.
+
 ## Runtime Behavior
 
 - `POST /infer` returns immediately with a receipt.

@@ -99,24 +99,87 @@ Wait ~3 minutes for the startup script to finish.
 ./scripts/bootstrap-instance.sh
 ```
 
-Copies Docker files and workspace to the VM, builds the Docker image (~10-15 min first time), and verifies GPU access inside the container.
+Builds both image variants in one run and verifies they are usable:
+- CPU image: `aa-zklora-dev:ezkl`
+- GPU image: `aa-zklora-dev:ezkl-gpu`
 
 ---
 
-### 3. Daily workflow
+### 3. Modes + Daily Workflow
+
+All benchmark/prover/GPU workload commands must be executed inside the dev container at `/workspace`. The host shell is only for infra management (`./scripts/...`).
+
+#### Modes
+
+- `cpu` mode: uses `aa-zklora-dev:ezkl` (safe default for most development).
+- `gpu` mode: uses `aa-zklora-dev:ezkl-gpu` (required for GPU proving/validation runs).
+
+#### Architecture Diagram (ASCII)
+
+```text
+Local Host Shell
+  |
+  |  ./scripts/bootstrap-instance.sh   (one-time)
+  |  ./scripts/start-dev.sh --container {cpu|gpu}
+  |  ./scripts/stop-dev.sh
+  v
+GCP VM: aa-zklora-dev
+  |
+  +-- Docker Images (built once by bootstrap)
+  |     - aa-zklora-dev:ezkl
+  |     - aa-zklora-dev:ezkl-gpu
+  |
+  +-- Runtime Container (same name, selected image)
+        - container name: aa-zklora-dev
+        - image tag: ezkl OR ezkl-gpu
+        - workload path: /workspace
+```
+
+#### Flow Timeline (ASCII)
+
+```text
+[One-time setup]
+create-instance.sh -> bootstrap-instance.sh (build ezkl + ezkl-gpu)
+
+[Daily CPU]
+start-dev.sh --container cpu -> docker compose up (aa-zklora-dev:ezkl)
+-> run jobs in container -> stop-dev.sh
+
+[Daily GPU]
+start-dev.sh --container gpu -> docker compose up (aa-zklora-dev:ezkl-gpu)
+-> run jobs in container -> stop-dev.sh
+```
+
+#### Quick Runbook
 
 ```bash
-# Morning: start VM + container, drop into shell
-./scripts/start-dev.sh
+# One-time bootstrap (build both images)
+./scripts/bootstrap-instance.sh
 
-# Morning: start with Jupyter Lab too
-./scripts/start-dev.sh --jupyter
+# Daily start (CPU mode)
+./scripts/start-dev.sh --container cpu
 
-# Evening: stop container + stop VM -- billing stops
+# Daily start (GPU mode)
+./scripts/start-dev.sh --container gpu
+
+# Optional: start with Jupyter
+./scripts/start-dev.sh --container gpu --jupyter
+
+# Stop everything (containers + VM)
 ./scripts/stop-dev.sh
 ```
 
-Your work is preserved in named Docker volumes across stop/start cycles.
+Quick verification:
+
+```bash
+# Check active image used by running dev container
+gcloud compute ssh aa-zklora-dev --zone=us-central1-a --command \
+  "docker inspect aa-zklora-dev --format '{{.Config.Image}}'"
+
+# Check CUDA visibility (useful after starting gpu mode)
+gcloud compute ssh aa-zklora-dev --zone=us-central1-a --command \
+  "docker exec aa-zklora-dev python3 -c 'import torch; print(torch.cuda.is_available(), torch.cuda.device_count())'"
+```
 
 ---
 
@@ -131,33 +194,32 @@ Creates the GCP VM with T4 GPU (default) or A100 (`--a100`). Sets up firewall, a
 ./scripts/create-instance.sh --a100   # A100 GPU
 ```
 
-### `bootstrap-instance.sh` — One-Time Docker Build
+### `bootstrap-instance.sh` — One-Time Dual-Image Build
 
-Waits for the startup script to complete, copies Docker config and workspace to the VM, builds the Docker image, and verifies GPU is visible inside the container.
+Waits for startup completion, syncs repo/submodules, builds both image variants, and verifies package labels plus GPU runtime for the GPU image.
 
 ```bash
 ./scripts/bootstrap-instance.sh
 ```
 
-### `start-dev.sh` — Start VM + Container
+### `start-dev.sh` — Start VM + Selected Mode
 
-Starts the VM (if stopped), brings up the dev container, and drops you into a shell. Optionally starts Jupyter Lab with port forwarding.
-
-```bash
-./scripts/start-dev.sh              # start VM + container, drop into shell
-./scripts/start-dev.sh --jupyter    # also start Jupyter Lab (localhost:8889)
-./scripts/start-dev.sh --no-shell   # start container but don't attach
-```
-
-### `stop-dev.sh` — Stop Container + VM
-
-Gracefully stops Docker containers, then stops the VM. Run this at the end of every session.
+Starts the VM (if needed), validates that the selected image tag exists, brings up the dev container with that tag, and drops you into a shell.
 
 ```bash
-./scripts/stop-dev.sh           # stop containers + stop VM
-./scripts/stop-dev.sh --soft    # stop containers only, leave VM running
+./scripts/start-dev.sh --container cpu          # default mode
+./scripts/start-dev.sh --container gpu          # GPU image mode
+./scripts/start-dev.sh --container gpu --jupyter
+./scripts/start-dev.sh --container cpu --no-shell
 ```
 
+### `stop-dev.sh` — Stop All Containers + VM
+
+Stops dev/jupyter containers and then stops the VM.
+
+```bash
+./scripts/stop-dev.sh
+```
 ### `snapshot-and-delete.sh` — Extended Break Cost Saver
 
 For breaks >1 week. Pulls workspace locally (safety copy), snapshots the boot disk, then deletes the VM. Stops **all** billing. Requires interactive confirmation.

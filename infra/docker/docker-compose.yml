@@ -19,7 +19,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-    image: aa-zklora-dev:latest
+      args:
+        EZKL_PYPI_PACKAGE: ${EZKL_PYPI_PACKAGE:-ezkl}
+    image: aa-zklora-dev:
     container_name: aa-zklora-dev
     runtime: nvidia
     environment:
@@ -52,7 +54,7 @@ services:
 
   # -- jupyter service (optional, separate from main dev shell) ----------------
   jupyter:
-    image: aa-zklora-dev:latest
+    image: aa-zklora-dev:
     container_name: zklora-jupyter
     runtime: nvidia
     environment:

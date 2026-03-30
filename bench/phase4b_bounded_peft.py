@@ -108,6 +108,40 @@ def _stats(values: list[float]) -> dict[str, float | None]:
     }
 
 
+def _float_or_none(value: Any) -> float | None:
+    if value is None:
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _bool_from_ref(value: Any) -> bool | None:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return None
+
+
+def _summarize_setup_cache(entries: list[bool]) -> dict[str, Any]:
+    hits = sum(1 for flag in entries if flag)
+    misses = sum(1 for flag in entries if not flag)
+    total = hits + misses
+    return {
+        "enabled": total > 0,
+        "hits": hits,
+        "misses": misses,
+        "hit_rate": None if total == 0 else round(hits / total, 6),
+    }
+
+
 def _extract_case_metrics(
     records: dict[str, ProofRecord],
     request_ids: list[str],
@@ -117,6 +151,7 @@ def _extract_case_metrics(
     stage_witness_s: list[float] = []
     stage_prove_s: list[float] = []
     stage_total_s: list[float] = []
+    setup_cache_entries: list[bool] = []
     error_messages: list[str] = []
 
     for request_id in request_ids:
@@ -134,6 +169,10 @@ def _extract_case_metrics(
             stage_prove_s.append(float(refs["stage_prove_s"]))
         if "stage_total_s" in refs:
             stage_total_s.append(float(refs["stage_total_s"]))
+        cache_enabled = _bool_from_ref(refs.get("setup_cache_enabled"))
+        cache_hit = _bool_from_ref(refs.get("setup_cache_hit"))
+        if cache_enabled and cache_hit is not None:
+            setup_cache_entries.append(cache_hit)
         if record.error_message:
             error_messages.append(record.error_message)
 
@@ -147,6 +186,65 @@ def _extract_case_metrics(
             "total": _stats(stage_total_s),
         },
         "error_samples": unique_errors[:5],
+        "setup_cache": _summarize_setup_cache(setup_cache_entries),
+    }
+
+
+def _extract_case_metrics_from_raw_records(records: dict[str, Any]) -> dict[str, Any]:
+    prover_duration_ms: list[float] = []
+    stage_setup_s: list[float] = []
+    stage_witness_s: list[float] = []
+    stage_prove_s: list[float] = []
+    stage_total_s: list[float] = []
+    setup_cache_entries: list[bool] = []
+    error_messages: list[str] = []
+
+    for record in records.values():
+        if not isinstance(record, dict):
+            continue
+
+        refs = record.get("artifact_refs")
+        if isinstance(refs, dict):
+            duration_ms = _float_or_none(refs.get("prover_duration_ms"))
+            if duration_ms is not None:
+                prover_duration_ms.append(duration_ms)
+
+            setup_s = _float_or_none(refs.get("stage_setup_s"))
+            if setup_s is not None:
+                stage_setup_s.append(setup_s)
+
+            witness_s = _float_or_none(refs.get("stage_witness_s"))
+            if witness_s is not None:
+                stage_witness_s.append(witness_s)
+
+            prove_s = _float_or_none(refs.get("stage_prove_s"))
+            if prove_s is not None:
+                stage_prove_s.append(prove_s)
+
+            total_s = _float_or_none(refs.get("stage_total_s"))
+            if total_s is not None:
+                stage_total_s.append(total_s)
+
+            cache_enabled = _bool_from_ref(refs.get("setup_cache_enabled"))
+            cache_hit = _bool_from_ref(refs.get("setup_cache_hit"))
+            if cache_enabled and cache_hit is not None:
+                setup_cache_entries.append(cache_hit)
+
+        error_message = record.get("error_message")
+        if isinstance(error_message, str) and error_message:
+            error_messages.append(error_message)
+
+    unique_errors = sorted(set(error_messages))
+    return {
+        "prover_duration_ms": _stats(prover_duration_ms),
+        "stage_timing_s": {
+            "setup": _stats(stage_setup_s),
+            "witness": _stats(stage_witness_s),
+            "prove": _stats(stage_prove_s),
+            "total": _stats(stage_total_s),
+        },
+        "error_samples": unique_errors[:5],
+        "setup_cache": _summarize_setup_cache(setup_cache_entries),
     }
 
 
@@ -204,16 +302,22 @@ def run_case_direct(
     seed: Optional[int] = None,
     hidden_dim: int = 768,
     seq_len: int = 1,
+    base_model_id: Optional[str] = None,
+    adapter_id: Optional[str] = None,
+    setup_cache_root: Optional[str] = None,
 ) -> dict[str, Any]:
     runtime_artifacts = ensure_dir(case_dir / "runtime_artifacts")
-    config = AppConfig.from_dict(
-        {
-            "artifacts_root": str(runtime_artifacts),
-            "proof_mode": "every_request",
-            "prover_backend": case.backend,
-            "proof_worker_threads": case.threads,
-        }
-    )
+    config_data: dict[str, Any] = {
+        "artifacts_root": str(runtime_artifacts),
+        "proof_mode": "every_request",
+        "prover_backend": case.backend,
+        "proof_worker_threads": case.threads,
+    }
+    if base_model_id is not None:
+        config_data["base_model_id"] = base_model_id
+    if adapter_id is not None:
+        config_data["adapter_id"] = adapter_id
+    config = AppConfig.from_dict(config_data)
     server = MVPServer(
         config=config,
         runtime=SyntheticRuntime3D(hidden_dim=hidden_dim, seq_len=seq_len, seed=seed),
@@ -226,6 +330,7 @@ def run_case_direct(
             base_model_id=config.base_model_id,
             adapter_id=config.adapter_id,
             prover_backend=config.prover_backend,
+            setup_cache_root=setup_cache_root,
         ),
         proof_worker_threads=config.proof_worker_threads,
     )
@@ -266,6 +371,7 @@ def run_case_direct(
         "prover_duration_ms": metrics["prover_duration_ms"],
         "stage_timing_s": metrics["stage_timing_s"],
         "error_samples": metrics["error_samples"],
+        "setup_cache": metrics["setup_cache"],
         "enqueue_errors": enqueue_errors[:5],
         "case_dir": str(case_dir),
     }
@@ -281,6 +387,9 @@ def _run_case_subprocess_target(
     seed: Optional[int],
     hidden_dim: int,
     seq_len: int,
+    base_model_id: Optional[str],
+    adapter_id: Optional[str],
+    setup_cache_root: Optional[str],
     out_queue: mp.Queue,
 ) -> None:
     case = BenchmarkCase(**case_payload)
@@ -293,28 +402,48 @@ def _run_case_subprocess_target(
             seed=seed,
             hidden_dim=hidden_dim,
             seq_len=seq_len,
+            base_model_id=base_model_id,
+            adapter_id=adapter_id,
+            setup_cache_root=setup_cache_root,
         )
         out_queue.put({"ok": True, "result": result})
     except Exception as exc:  # pragma: no cover - defensive benchmark error capture
         out_queue.put({"ok": False, "error": str(exc)})
 
 
-def _load_partial_status(case_dir: Path) -> tuple[dict[str, int], list[str]]:
+def _load_partial_status(case_dir: Path) -> tuple[dict[str, int], dict[str, Any]]:
     store_path = case_dir / "runtime_artifacts" / "proof" / "proof_store.json"
+    empty_metrics = {
+        "prover_duration_ms": {"count": 0, "avg": None, "min": None, "max": None},
+        "stage_timing_s": {
+            "setup": {"count": 0, "avg": None, "min": None, "max": None},
+            "witness": {"count": 0, "avg": None, "min": None, "max": None},
+            "prove": {"count": 0, "avg": None, "min": None, "max": None},
+            "total": {"count": 0, "avg": None, "min": None, "max": None},
+        },
+        "error_samples": [],
+        "setup_cache": {"enabled": False, "hits": 0, "misses": 0, "hit_rate": None},
+    }
+
     if not store_path.exists():
-        return {}, []
+        return {}, empty_metrics
+
     with store_path.open("r", encoding="utf-8") as handle:
         payload = json.load(handle)
+
     records = payload.get("records", {})
+    if not isinstance(records, dict):
+        return {}, empty_metrics
+
     status_counts: dict[str, int] = {}
-    errors: list[str] = []
     for rec in records.values():
+        if not isinstance(rec, dict):
+            continue
         status = str(rec.get("status", "unknown"))
         status_counts[status] = status_counts.get(status, 0) + 1
-        error_message = rec.get("error_message")
-        if isinstance(error_message, str) and error_message:
-            errors.append(error_message)
-    return status_counts, sorted(set(errors))[:5]
+
+    metrics = _extract_case_metrics_from_raw_records(records)
+    return status_counts, metrics
 
 
 def run_case_bounded(
@@ -326,6 +455,9 @@ def run_case_bounded(
     seed: Optional[int],
     hidden_dim: int,
     seq_len: int,
+    base_model_id: Optional[str] = None,
+    adapter_id: Optional[str] = None,
+    setup_cache_root: Optional[str] = None,
 ) -> dict[str, Any]:
     case_dir = ensure_dir(run_dir / case.tag())
     queue: mp.Queue = mp.Queue(maxsize=1)
@@ -340,6 +472,9 @@ def run_case_bounded(
             seed,
             hidden_dim,
             seq_len,
+            base_model_id,
+            adapter_id,
+            setup_cache_root,
             queue,
         ),
         daemon=True,
@@ -351,7 +486,9 @@ def run_case_bounded(
     if proc.is_alive():
         proc.terminate()
         proc.join(timeout=3.0)
-        status_counts, errors = _load_partial_status(case_dir)
+        status_counts, metrics = _load_partial_status(case_dir)
+        processed_jobs = status_counts.get("ready", 0) + status_counts.get("failed", 0)
+        throughput = (processed_jobs / elapsed) if elapsed > 0 and processed_jobs > 0 else 0.0
         result = {
             "backend": case.backend,
             "threads": case.threads,
@@ -360,19 +497,15 @@ def run_case_bounded(
             + status_counts.get("failed", 0)
             + status_counts.get("pending", 0)
             + status_counts.get("queued", 0),
-            "processed_jobs": status_counts.get("ready", 0) + status_counts.get("failed", 0),
+            "processed_jobs": processed_jobs,
             "status": "timed_out",
             "status_counts": status_counts,
             "worker_wall_s": round(elapsed, 6),
-            "req_per_sec": 0.0,
-            "prover_duration_ms": {"count": 0, "avg": None, "min": None, "max": None},
-            "stage_timing_s": {
-                "setup": {"count": 0, "avg": None, "min": None, "max": None},
-                "witness": {"count": 0, "avg": None, "min": None, "max": None},
-                "prove": {"count": 0, "avg": None, "min": None, "max": None},
-                "total": {"count": 0, "avg": None, "min": None, "max": None},
-            },
-            "error_samples": errors,
+            "req_per_sec": round(throughput, 6),
+            "prover_duration_ms": metrics["prover_duration_ms"],
+            "stage_timing_s": metrics["stage_timing_s"],
+            "error_samples": metrics["error_samples"],
+            "setup_cache": metrics["setup_cache"],
             "enqueue_errors": [],
             "case_dir": str(case_dir),
         }
@@ -399,6 +532,7 @@ def run_case_bounded(
                 "total": {"count": 0, "avg": None, "min": None, "max": None},
             },
             "error_samples": [str(outcome.get("error", "unknown benchmark error"))],
+            "setup_cache": {"enabled": False, "hits": 0, "misses": 0, "hit_rate": None},
             "enqueue_errors": [],
             "case_dir": str(case_dir),
         }
@@ -422,19 +556,25 @@ def render_summary_markdown(payload: dict[str, Any]) -> str:
         f"- run_dir: `{payload['run_dir']}`",
         f"- timeout_sec: `{payload['timeout_sec']}`",
         f"- request_concurrency: `{payload['request_concurrency']}`",
+        f"- setup_cache_root: `{payload.get('setup_cache_root') or '-'}`",
         "",
         "## All Points",
         "",
-        "| backend | threads | requests | status | ready | failed | wall_s | req_per_sec | setup_s(avg) | witness_s(avg) | prove_s(avg) | total_s(avg) |",
-        "|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| backend | threads | requests | status | ready | failed | wall_s | req_per_sec | setup_s(avg) | witness_s(avg) | prove_s(avg) | total_s(avg) | cache_hits | cache_misses | cache_hit_rate |",
+        "|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
     for point in points:
         counts = point["status_counts"]
         ready = counts.get("ready", 0)
         failed = counts.get("failed", 0)
         timings = point["stage_timing_s"]
+        setup_cache = point.get("setup_cache", {})
+        cache_hits = int(setup_cache.get("hits", 0))
+        cache_misses = int(setup_cache.get("misses", 0))
+        hit_rate = setup_cache.get("hit_rate")
+        cache_hit_rate = "-" if hit_rate is None else f"{float(hit_rate):.6f}"
         lines.append(
-            "| {backend} | {threads} | {requests} | {status} | {ready} | {failed} | {wall:.6f} | {rps:.6f} | {setup} | {witness} | {prove} | {total} |".format(
+            "| {backend} | {threads} | {requests} | {status} | {ready} | {failed} | {wall:.6f} | {rps:.6f} | {setup} | {witness} | {prove} | {total} | {cache_hits} | {cache_misses} | {cache_hit_rate} |".format(
                 backend=point["backend"],
                 threads=point["threads"],
                 requests=point["requests"],
@@ -447,6 +587,9 @@ def render_summary_markdown(payload: dict[str, Any]) -> str:
                 witness=_format_stage_avg(timings, "witness"),
                 prove=_format_stage_avg(timings, "prove"),
                 total=_format_stage_avg(timings, "total"),
+                cache_hits=cache_hits,
+                cache_misses=cache_misses,
+                cache_hit_rate=cache_hit_rate,
             )
         )
 
@@ -521,6 +664,9 @@ def run_matrix(
     seed: Optional[int],
     hidden_dim: int,
     seq_len: int,
+    base_model_id: Optional[str] = None,
+    adapter_id: Optional[str] = None,
+    setup_cache_root: Optional[str] = None,
 ) -> Path:
     run_dir = ensure_dir(output_root / f"phase4b-bounded-peft-{utc_label()}")
     cases = expand_cases(backends=backends, threads=threads, requests=requests)
@@ -536,6 +682,9 @@ def run_matrix(
                 seed=seed,
                 hidden_dim=hidden_dim,
                 seq_len=seq_len,
+                base_model_id=base_model_id,
+                adapter_id=adapter_id,
+                setup_cache_root=setup_cache_root,
             )
         )
 
@@ -546,6 +695,7 @@ def run_matrix(
         "seed": seed,
         "hidden_dim": hidden_dim,
         "seq_len": seq_len,
+        "setup_cache_root": setup_cache_root,
         "points": points,
     }
     write_json(run_dir / "summary.json", payload)
@@ -567,6 +717,13 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=None)
     parser.add_argument("--hidden-dim", type=int, default=768)
     parser.add_argument("--seq-len", type=int, default=1)
+    parser.add_argument("--base-model-id", default=AppConfig.base_model_id)
+    parser.add_argument("--adapter-id", default=AppConfig.adapter_id)
+    parser.add_argument(
+        "--setup-cache-root",
+        default=None,
+        help="Optional persistent setup cache root. When set, setup artifacts are reused across runs.",
+    )
     return parser.parse_args()
 
 
@@ -583,6 +740,9 @@ def main() -> None:
         seed=args.seed,
         hidden_dim=args.hidden_dim,
         seq_len=args.seq_len,
+        base_model_id=args.base_model_id,
+        adapter_id=args.adapter_id,
+        setup_cache_root=args.setup_cache_root,
     )
     print(str(run_dir))
 

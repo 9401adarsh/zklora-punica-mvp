@@ -57,6 +57,9 @@ The script prints the run directory at the end, for example:
 - `--seed` optional int
 - `--hidden-dim` int, default: `768`
 - `--seq-len` int, default: `1`
+- `--base-model-id` model id/path, default: `distilgpt2`
+- `--adapter-id` adapter id/path, default: `ng0-k1/distilgpt2-finetuned-es`
+- `--setup-cache-root` optional path for persistent setup cache reuse across runs
 
 ## Example Runs
 
@@ -93,6 +96,28 @@ docker exec aa-zklora-dev python3 /workspace/bench/phase4b_bounded_peft.py \
   --output-root /workspace/artifacts/runs
 ```
 
+## Cached Setup Mode (Opt-In)
+
+Use `--setup-cache-root` to persist setup artifacts across timestamped benchmark runs.
+
+- First run with a fresh cache root: setup cache misses are expected.
+- Re-running with the same cache root and same fingerprint inputs (backend/model/adapter/module/EZKL version): setup cache hits are expected.
+- If fingerprint inputs change, cache entries are rebuilt automatically.
+
+Example (shared cache root):
+
+```bash
+docker exec aa-zklora-dev python3 /workspace/bench/phase4b_bounded_peft.py \
+  --backends gpu \
+  --threads 1 \
+  --requests 5 \
+  --timeout-sec 1200 \
+  --setup-cache-root /workspace/artifacts/setup-cache/phase4b \
+  --output-root /workspace/artifacts/runs
+```
+
+Note: cache reuse across runs only works when `--setup-cache-root` points to a stable path.
+
 ## Output Layout
 
 For a run directory:
@@ -121,9 +146,75 @@ Use each case `summary.json`:
 
 - `status_counts`: how many ended `ready`, `failed`, `pending`, `queued`
 - `worker_wall_s`: case wall time
-- `req_per_sec`: throughput (for completed cases)
+- `req_per_sec`: throughput (completed cases, or partial throughput for timed-out cases)
 - `prover_duration_ms`: recorded worker-side proof duration stats
 - `stage_timing_s`: average setup/witness/prove/total stage timings when available
+- `setup_cache`: cache telemetry (`enabled`, `hits`, `misses`, `hit_rate`) for setup reuse
+
+## Run Tests In CPU/GPU Containers
+
+Use this when you want to validate the project test suite in explicit CPU and GPU container modes.
+
+Prerequisites:
+- Images are present (`aa-zklora-dev:ezkl` and `aa-zklora-dev:ezkl-gpu`).
+- Run from repo root.
+
+### GPU container test run
+
+Spin up a GPU container:
+
+```bash
+docker rm -f aa-zklora-gpu-test 2>/dev/null || true
+docker run -d --name aa-zklora-gpu-test --gpus all \
+  -v "$PWD":/workspace \
+  -v "$PWD/punica":/opt/punica \
+  -v "$PWD/zklora":/opt/zkLoRA \
+  -w /workspace \
+  aa-zklora-dev:ezkl-gpu sleep infinity
+```
+
+Run tests:
+
+```bash
+docker exec aa-zklora-gpu-test python3 -m pytest -q mvp_server/tests
+```
+
+Cleanup:
+
+```bash
+docker rm -f aa-zklora-gpu-test
+```
+
+### CPU container test run
+
+Spin up a CPU container:
+
+```bash
+docker rm -f aa-zklora-cpu-test 2>/dev/null || true
+docker run -d --name aa-zklora-cpu-test \
+  -v "$PWD":/workspace \
+  -v "$PWD/punica":/opt/punica \
+  -v "$PWD/zklora":/opt/zkLoRA \
+  -w /workspace \
+  aa-zklora-dev:ezkl sleep infinity
+```
+
+Run tests:
+
+```bash
+docker exec aa-zklora-cpu-test python3 -m pytest -q mvp_server/tests
+```
+
+Cleanup:
+
+```bash
+docker rm -f aa-zklora-cpu-test
+```
+
+### Notes
+
+- Use `mvp_server/tests` target to avoid collecting third-party submodule tests under `punica/third_party`.
+- If you run `pytest` from repo root without a target, test discovery may include unrelated external tests.
 
 ## Troubleshooting
 
@@ -158,7 +249,51 @@ Also test smaller matrix first (`requests=5`) and scale up.
 
 If backend is `gpu` and CUDA is unavailable, proofs should fail with a clear runtime message.
 
-### 4) Verify EZKL backend support
+### 4) Hugging Face adapter download/TLS failure
+
+Symptom: errors like `MaxRetryError` / `SSLError` while requesting `adapter_model.safetensors` from `huggingface.co`.
+
+Use a local adapter path to avoid network fetches during benchmark runs:
+
+```bash
+--adapter-id /workspace/path/to/local/adapter
+```
+
+You can also override base model if needed:
+
+```bash
+--base-model-id distilgpt2
+```
+
+If you already have both model and adapter cached in-container, run fully offline to avoid HF TLS/network flakiness:
+
+Verify cache paths exist first:
+
+```bash
+docker exec aa-zklora-dev bash -lc '
+ls -1d /root/.cache/huggingface/hub/models--distilgpt2/snapshots/* | head -n 1
+ls -1d /root/.cache/huggingface/hub/models--ng0-k1--distilgpt2-finetuned-es/snapshots/* | head -n 1
+'
+```
+
+```bash
+docker exec aa-zklora-dev bash -lc '
+base=$(ls -1d /root/.cache/huggingface/hub/models--distilgpt2/snapshots/* | head -n 1)
+adapter=$(ls -1d /root/.cache/huggingface/hub/models--ng0-k1--distilgpt2-finetuned-es/snapshots/* | head -n 1)
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+python3 /workspace/bench/phase4b_bounded_peft.py \
+  --backends gpu \
+  --threads 8 \
+  --requests 100 \
+  --timeout-sec 7200 \
+  --request-concurrency 1 \
+  --output-root /workspace/artifacts/runs \
+  --base-model-id "$base" \
+  --adapter-id "$adapter"
+'
+```
+
+### 5) Verify EZKL backend support
 
 Some EZKL versions expose `backend` in `ezkl.prove`, others do not.
 If backend is not supported, proving may still run but without GPU backend routing.
@@ -171,7 +306,7 @@ print(inspect.signature(ezkl.prove))
 PY
 ```
 
-### 5) Map GPU PID to benchmark run
+### 6) Map GPU PID to benchmark run
 
 Use this when `nvidia-smi` shows GPU processes and you want to know which run owns each PID.
 
@@ -198,7 +333,7 @@ docker exec aa-zklora-dev bash -lc \
 | xargs -I{} ps -fp {}"
 ```
 
-### 6) Stop benchmark runs cleanly
+### 7) Stop benchmark runs cleanly
 
 Stop all `phase4b_bounded_peft.py` processes in the container:
 
@@ -228,7 +363,7 @@ docker exec aa-zklora-dev kill -TERM <pid>
 docker exec aa-zklora-dev kill -KILL <pid>
 ```
 
-### 7) Incomplete top-level summary after interruption
+### 8) Incomplete top-level summary after interruption
 
 If interrupted mid-run, case-level `summary.json` files may still be usable. Use those for partial analysis.
 

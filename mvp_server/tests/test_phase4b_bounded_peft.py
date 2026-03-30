@@ -174,3 +174,49 @@ def test_run_case_direct_full_peft_path_smoke(
     assert result["status_counts"]["ready"] == 2
     assert loader_called["count"] >= 1
     assert result["stage_timing_s"]["total"]["count"] == 2
+
+
+def test_load_partial_status_extracts_partial_metrics(tmp_path: Path) -> None:
+    case_dir = tmp_path / "case"
+    proof_dir = case_dir / "runtime_artifacts" / "proof"
+    proof_dir.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "records": {
+            "req-ready": {
+                "status": "ready",
+                "artifact_refs": {
+                    "prover_duration_ms": "123.0",
+                    "stage_setup_s": "1.0",
+                    "stage_witness_s": "2.0",
+                    "stage_prove_s": "3.0",
+                    "stage_total_s": "6.0",
+                    "setup_cache_enabled": "1",
+                    "setup_cache_hit": "0",
+                },
+                "error_message": None,
+            },
+            "req-failed": {
+                "status": "failed",
+                "artifact_refs": {},
+                "error_message": "adapter fetch failed",
+            },
+        }
+    }
+    (proof_dir / "proof_store.json").write_text(json.dumps(payload), encoding="utf-8")
+
+    status_counts, metrics = harness._load_partial_status(case_dir)
+
+    assert status_counts == {"ready": 1, "failed": 1}
+    assert metrics["prover_duration_ms"]["count"] == 1
+    assert metrics["prover_duration_ms"]["avg"] == 123.0
+    assert metrics["stage_timing_s"]["setup"]["avg"] == 1.0
+    assert metrics["stage_timing_s"]["witness"]["avg"] == 2.0
+    assert metrics["stage_timing_s"]["prove"]["avg"] == 3.0
+    assert metrics["stage_timing_s"]["total"]["avg"] == 6.0
+    assert metrics["error_samples"] == ["adapter fetch failed"]
+    assert metrics["setup_cache"] == {
+        "enabled": True,
+        "hits": 0,
+        "misses": 1,
+        "hit_rate": 0.0,
+    }

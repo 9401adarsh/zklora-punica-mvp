@@ -3,8 +3,8 @@
 # bootstrap-instance.sh
 # Run once after create-instance.sh to:
 #   1. Clone the repo (with submodules) onto the instance
-#   2. Build the docker image on the instance
-#   3. Verify GPU is visible inside the container
+#   2. Build both docker image variants on the instance
+#   3. Verify package labels and GPU runtime for the GPU image
 #
 # Usage:
 #   ./bootstrap-instance.sh
@@ -15,6 +15,32 @@ set -euo pipefail
 INSTANCE_NAME="aa-zklora-dev"
 ZONE="us-central1-a"
 REMOTE_DIR="zklora-punica-mvp"
+
+usage() {
+  cat <<'USAGE'
+Usage:
+  ./bootstrap-instance.sh
+USAGE
+}
+
+if [[ $# -gt 0 ]]; then
+  case "$1" in
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    --ezkl-package|--ezkl-package=*)
+      echo "ERROR: --ezkl-package is no longer supported."
+      echo "bootstrap-instance.sh now builds BOTH cpu and gpu images in one run."
+      exit 1
+      ;;
+    *)
+      echo "ERROR: Unknown argument: $1"
+      usage
+      exit 1
+      ;;
+  esac
+fi
 
 # -- check startup is done -----------------------------------------------------
 echo "Checking startup script completed..."
@@ -43,7 +69,6 @@ echo "[OK] GPU visible"
 echo "Cloning repo onto instance..."
 gcloud compute ssh "$INSTANCE_NAME" --zone="$ZONE" --command="
   set -e
-  # Trust GitHub's SSH host key
   mkdir -p ~/.ssh
   ssh-keyscan github.com >> ~/.ssh/known_hosts 2>/dev/null
 
@@ -58,25 +83,46 @@ gcloud compute ssh "$INSTANCE_NAME" --zone="$ZONE" --command="
   fi
 "
 
-# -- build docker image on instance -------------------------------------------
+# -- build both docker image variants on instance ------------------------------
 echo ""
-echo "Building docker image on instance (this will take 10-15 minutes)..."
+echo "Building CPU image: aa-zklora-dev:ezkl"
 gcloud compute ssh "$INSTANCE_NAME" --zone="$ZONE" --command="
   cd ${REMOTE_DIR}/infra/docker
-  docker build --progress=plain -t aa-zklora-dev:latest .
+  docker build --build-arg EZKL_PYPI_PACKAGE=ezkl --progress=plain -t aa-zklora-dev:ezkl .
 "
-echo "[OK] Docker image built"
+echo "[OK] CPU image built"
 
-# -- verify GPU inside container -----------------------------------------------
-echo "Verifying GPU inside container..."
+echo ""
+echo "Building GPU image: aa-zklora-dev:ezkl-gpu"
+gcloud compute ssh "$INSTANCE_NAME" --zone="$ZONE" --command="
+  cd ${REMOTE_DIR}/infra/docker
+  docker build --build-arg EZKL_PYPI_PACKAGE=ezkl-gpu --progress=plain -t aa-zklora-dev:ezkl-gpu .
+"
+echo "[OK] GPU image built"
+
+# -- verify labels and package identity ----------------------------------------
+echo ""
+echo "Verifying image labels and package identity..."
 gcloud compute ssh "$INSTANCE_NAME" --zone="$ZONE" --command='
-  docker run --rm --gpus all aa-zklora-dev:latest \
-    python3 -c "import torch; print(\"CUDA:\", torch.cuda.is_available(), \"|\", torch.cuda.get_device_name(0) if torch.cuda.is_available() else \"none\")"
+  set -e
+  echo "cpu_label=$(docker image inspect aa-zklora-dev:ezkl --format='"'"'{{ index .Config.Labels "aa.ezkl_pypi_package" }}'"'"')"
+  echo "gpu_label=$(docker image inspect aa-zklora-dev:ezkl-gpu --format='"'"'{{ index .Config.Labels "aa.ezkl_pypi_package" }}'"'"')"
+  docker run --rm aa-zklora-dev:ezkl python3 -c "import importlib.metadata as m; print('"'"'cpu_pkg'"'"', m.version('"'"'ezkl'"'"'))"
+  docker run --rm aa-zklora-dev:ezkl-gpu python3 -c "import importlib.metadata as m; print('"'"'gpu_pkg'"'"', m.version('"'"'ezkl-gpu'"'"'))"
 '
-echo "[OK] GPU verified inside container"
+echo "[OK] Labels and package identity verified"
+
+# -- verify GPU runtime against GPU image --------------------------------------
+echo ""
+echo "Verifying GPU runtime against aa-zklora-dev:ezkl-gpu..."
+gcloud compute ssh "$INSTANCE_NAME" --zone="$ZONE" --command='docker run --rm --gpus all aa-zklora-dev:ezkl-gpu nvidia-smi --query-gpu=name,driver_version --format=csv,noheader'
+echo "[OK] GPU runtime verified"
 
 echo ""
-echo "Bootstrap complete. Instance is ready."
+echo "Bootstrap complete. This is a one-time setup."
+echo "Both image modes are ready:"
+echo "  - CPU: aa-zklora-dev:ezkl"
+echo "  - GPU: aa-zklora-dev:ezkl-gpu"
 echo ""
-echo "To SSH in and start working:  ./ssh-instance.sh"
-echo "To bring up the container:    ./start-dev.sh"
+echo "To start CPU mode: ./scripts/start-dev.sh --container cpu"
+echo "To start GPU mode: ./scripts/start-dev.sh --container gpu"

@@ -84,6 +84,12 @@ class ProverWorker:
                 artifact_refs["stage_prove_s"] = f"{result.stage_prove_s:.6f}"
             if result.stage_total_s is not None:
                 artifact_refs["stage_total_s"] = f"{result.stage_total_s:.6f}"
+            if result.setup_cache_enabled is not None:
+                artifact_refs["setup_cache_enabled"] = "1" if result.setup_cache_enabled else "0"
+            if result.setup_cache_hit is not None:
+                artifact_refs["setup_cache_hit"] = "1" if result.setup_cache_hit else "0"
+            if result.setup_cache_key is not None:
+                artifact_refs["setup_cache_key"] = result.setup_cache_key
             self.proof_store.set_terminal(
                 request_id=request_id,
                 status="ready",

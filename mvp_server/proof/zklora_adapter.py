@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import inspect
 import json
 import re
 import sys
+import threading
 from dataclasses import dataclass
 from importlib import import_module
 from pathlib import Path
@@ -21,10 +23,18 @@ class ProveResult:
     stage_witness_s: float | None = None
     stage_prove_s: float | None = None
     stage_total_s: float | None = None
+    setup_cache_enabled: bool | None = None
+    setup_cache_hit: bool | None = None
+    setup_cache_key: str | None = None
 
 
 class ZkLoraAdapter:
     """Single-adapter ZKLoRA proof adapter using direct local APIs."""
+
+    _SETUP_CACHE_SCHEMA_VERSION = 1
+    _SETUP_CACHE_META_FILENAME = "setup_cache_meta.json"
+    _setup_dir_locks: dict[str, threading.Lock] = {}
+    _setup_dir_locks_guard = threading.Lock()
 
     def __init__(
         self,
@@ -35,6 +45,7 @@ class ZkLoraAdapter:
         model_loader: Any | None = None,
         exporter: Any | None = None,
         prove_runner: Any | None = None,
+        setup_cache_root: str | None = None,
     ) -> None:
         backend = str(prover_backend).strip().lower()
         if backend not in {"cpu", "gpu"}:
@@ -48,6 +59,8 @@ class ZkLoraAdapter:
         self._model_loader = model_loader
         self._exporter = exporter
         self._prove_runner = prove_runner
+        cache_root = None if setup_cache_root is None else str(setup_cache_root).strip()
+        self._setup_cache_root = Path(cache_root) if cache_root else None
 
     @staticmethod
     def _job_value(job: Any, key: str) -> Any:
@@ -68,14 +81,31 @@ class ZkLoraAdapter:
         cleaned = re.sub(r"[^a-zA-Z0-9._-]+", "_", value)
         return cleaned.strip("._") or "default"
 
+    @staticmethod
+    def _module_base_name(module_id: str) -> str:
+        return module_id.replace(".", "_").replace("/", "_")
+
+    @classmethod
+    def _setup_lock_for_dir(cls, setup_dir: Path) -> threading.Lock:
+        key = str(setup_dir.resolve())
+        with cls._setup_dir_locks_guard:
+            lock = cls._setup_dir_locks.get(key)
+            if lock is None:
+                lock = threading.Lock()
+                cls._setup_dir_locks[key] = lock
+            return lock
+
     def _setup_dir_for_module(self, module_id: str) -> Path:
-        return (
-            self.artifacts_root
-            / "proof_setup"
-            / self._safe_component(self.base_model_id)
-            / self._safe_component(self.adapter_id)
-            / self._safe_component(module_id)
-        )
+        if self._setup_cache_root is None:
+            return (
+                self.artifacts_root
+                / "proof_setup"
+                / self._safe_component(self.base_model_id)
+                / self._safe_component(self.adapter_id)
+                / self._safe_component(module_id)
+            )
+        cache_key, _meta = self._setup_cache_fingerprint(module_id)
+        return self._setup_cache_root / f"v{self._SETUP_CACHE_SCHEMA_VERSION}" / cache_key
 
     @staticmethod
     def _ensure_transformers_peft_compat() -> None:
@@ -153,6 +183,99 @@ class ZkLoraAdapter:
                 "gpu backend requested but CUDA runtime is unavailable"
             )
 
+    def _ezkl_version(self) -> str:
+        try:
+            import ezkl
+
+            return str(getattr(ezkl, "__version__", "unknown"))
+        except Exception:  # pragma: no cover - environment dependent
+            return "unknown"
+
+    def _setup_cache_fingerprint(self, module_id: str) -> tuple[str, dict[str, str | int]]:
+        payload: dict[str, str | int] = {
+            "cache_schema_version": self._SETUP_CACHE_SCHEMA_VERSION,
+            "prover_backend": self.prover_backend,
+            "ezkl_version": self._ezkl_version(),
+            "base_model_id": self.base_model_id,
+            "adapter_id": self.adapter_id,
+            "module_id": module_id,
+        }
+        digest = hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        ).hexdigest()
+        return digest, payload
+
+    def _setup_cache_meta_path(self, setup_dir: Path) -> Path:
+        return setup_dir / self._SETUP_CACHE_META_FILENAME
+
+    def _required_setup_paths(self, setup_dir: Path, module_id: str) -> list[Path]:
+        base_name = self._module_base_name(module_id)
+        return [
+            setup_dir / f"{base_name}.ezkl",
+            setup_dir / f"{base_name}_settings.json",
+            setup_dir / "kzg.srs",
+            setup_dir / f"{base_name}.vk",
+            setup_dir / f"{base_name}.pk",
+        ]
+
+    def _has_required_setup_artifacts(self, setup_dir: Path, module_id: str) -> bool:
+        return all(path.exists() for path in self._required_setup_paths(setup_dir, module_id))
+
+    def _load_setup_cache_meta(self, setup_dir: Path) -> dict[str, Any] | None:
+        meta_path = self._setup_cache_meta_path(setup_dir)
+        if not meta_path.exists():
+            return None
+        try:
+            with meta_path.open("r", encoding="utf-8") as handle:
+                payload = json.load(handle)
+        except Exception:
+            return None
+        return payload if isinstance(payload, dict) else None
+
+    def _is_setup_cache_hit(
+        self,
+        setup_dir: Path,
+        module_id: str,
+        expected_key: str,
+        expected_fingerprint: dict[str, str | int],
+    ) -> bool:
+        if not self._has_required_setup_artifacts(setup_dir, module_id):
+            return False
+        payload = self._load_setup_cache_meta(setup_dir)
+        if payload is None:
+            return False
+        if payload.get("cache_key") != expected_key:
+            return False
+        if payload.get("fingerprint") != expected_fingerprint:
+            return False
+        return True
+
+    def _invalidate_setup_cache(self, setup_dir: Path, module_id: str) -> None:
+        paths = self._required_setup_paths(setup_dir, module_id)
+        paths.append(self._setup_cache_meta_path(setup_dir))
+        for path in paths:
+            try:
+                path.unlink()
+            except FileNotFoundError:
+                continue
+
+    def _persist_setup_cache_meta(
+        self,
+        setup_dir: Path,
+        cache_key: str,
+        fingerprint: dict[str, str | int],
+        module_id: str,
+    ) -> None:
+        if not self._has_required_setup_artifacts(setup_dir, module_id):
+            raise RuntimeError("setup cache rebuild did not produce required setup artifacts")
+        setup_dir.mkdir(parents=True, exist_ok=True)
+        payload = {
+            "cache_key": cache_key,
+            "fingerprint": fingerprint,
+        }
+        with self._setup_cache_meta_path(setup_dir).open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, sort_keys=True)
+
     def _load_witness_inputs(self, job: Any) -> tuple[Any, dict[str, Any]]:
         witness_ref = Path(str(self._job_value(job, "witness_ref")))
         if not witness_ref.exists():
@@ -229,15 +352,7 @@ class ZkLoraAdapter:
         if not list(proof_dir.glob("*.json")):
             raise ValueError("expected at least one JSON artifact after export")
 
-    def _run_zklora_prove(
-        self, proof_dir: Path, setup_dir: Path
-    ) -> dict[str, float] | None:
-        self._ensure_gpu_runtime_available()
-
-        if self._prove_runner is None:
-            prove_mod = self._import_any(("zklora.zk_proof_generator",))
-            self._prove_runner = getattr(prove_mod, "generate_proofs")
-
+    def _invoke_prove_runner(self, proof_dir: Path, setup_dir: Path) -> Any:
         kwargs: dict[str, Any] = {
             "onnx_dir": str(proof_dir),
             "json_dir": str(proof_dir),
@@ -249,9 +364,8 @@ class ZkLoraAdapter:
         if self._supports_kwargs(self._prove_runner, "backend"):
             kwargs["backend"] = self.prover_backend
 
-        result: Any
         try:
-            result = self._prove_runner(**kwargs)
+            return self._prove_runner(**kwargs)
         except TypeError as first_exc:
             if not self._is_signature_type_error(first_exc):
                 raise
@@ -263,19 +377,66 @@ class ZkLoraAdapter:
                 "verbose": False,
             }
             try:
-                result = self._prove_runner(**fallback_kwargs)
+                return self._prove_runner(**fallback_kwargs)
             except TypeError as second_exc:
                 if not self._is_signature_type_error(second_exc):
                     raise
-                result = self._prove_runner(
+                return self._prove_runner(
                     onnx_dir=str(proof_dir),
                     json_dir=str(proof_dir),
                     output_dir=str(proof_dir),
                     verbose=False,
                 )
 
-        if inspect.isawaitable(result):
-            result = asyncio.run(result)
+    def _run_zklora_prove(
+        self,
+        proof_dir: Path,
+        setup_dir: Path,
+        module_id: str,
+        setup_cache_key: str | None,
+        setup_cache_fingerprint: dict[str, str | int] | None,
+    ) -> tuple[dict[str, float] | None, bool | None]:
+        self._ensure_gpu_runtime_available()
+
+        if self._prove_runner is None:
+            prove_mod = self._import_any(("zklora.zk_proof_generator",))
+            self._prove_runner = getattr(prove_mod, "generate_proofs")
+
+        cache_hit: bool | None = None
+        if setup_cache_key and setup_cache_fingerprint:
+            setup_dir.mkdir(parents=True, exist_ok=True)
+            lock = self._setup_lock_for_dir(setup_dir)
+            lock.acquire()
+            cache_hit = self._is_setup_cache_hit(
+                setup_dir=setup_dir,
+                module_id=module_id,
+                expected_key=setup_cache_key,
+                expected_fingerprint=setup_cache_fingerprint,
+            )
+            if cache_hit:
+                lock.release()
+                result = self._invoke_prove_runner(proof_dir, setup_dir)
+                if inspect.isawaitable(result):
+                    result = asyncio.run(result)
+            else:
+                try:
+                    self._invalidate_setup_cache(setup_dir, module_id)
+                    result = self._invoke_prove_runner(proof_dir, setup_dir)
+                    if inspect.isawaitable(result):
+                        result = asyncio.run(result)
+                    self._persist_setup_cache_meta(
+                        setup_dir=setup_dir,
+                        cache_key=setup_cache_key,
+                        fingerprint=setup_cache_fingerprint,
+                        module_id=module_id,
+                    )
+                finally:
+                    lock.release()
+        else:
+            result = self._invoke_prove_runner(proof_dir, setup_dir)
+            if inspect.isawaitable(result):
+                result = asyncio.run(result)
+
         if result is None:
             raise RuntimeError("proof generation returned no result")
         stage_timings: dict[str, float] | None = None
@@ -291,7 +452,7 @@ class ZkLoraAdapter:
                 "prove_s": prove_s,
                 "total_s": setup_s + witness_s + prove_s,
             }
-        return stage_timings
+        return stage_timings, cache_hit
 
     def _collect_proof_refs(self, proof_dir: Path, setup_dir: Path) -> tuple[str, str]:
         proof_files = sorted(proof_dir.glob("*.pf"))
@@ -318,6 +479,11 @@ class ZkLoraAdapter:
         module_id = str(self._job_value(job, "module_id"))
 
         proof_dir = self.artifacts_root / "proofs" / request_id / module_id
+        setup_cache_key: str | None = None
+        setup_cache_fingerprint: dict[str, str | int] | None = None
+        if self._setup_cache_root is not None:
+            setup_cache_key, setup_cache_fingerprint = self._setup_cache_fingerprint(module_id)
+
         setup_dir = self._setup_dir_for_module(module_id)
         start = perf_counter()
         try:
@@ -336,7 +502,13 @@ class ZkLoraAdapter:
             raise RuntimeError(f"export: {exc}") from exc
 
         try:
-            stage_timings = self._run_zklora_prove(proof_dir, setup_dir)
+            stage_timings, setup_cache_hit = self._run_zklora_prove(
+                proof_dir=proof_dir,
+                setup_dir=setup_dir,
+                module_id=module_id,
+                setup_cache_key=setup_cache_key,
+                setup_cache_fingerprint=setup_cache_fingerprint,
+            )
         except Exception as exc:
             raise RuntimeError(f"prove: {exc}") from exc
 
@@ -355,4 +527,7 @@ class ZkLoraAdapter:
             else stage_timings["witness_s"],
             stage_prove_s=None if stage_timings is None else stage_timings["prove_s"],
             stage_total_s=None if stage_timings is None else stage_timings["total_s"],
+            setup_cache_enabled=self._setup_cache_root is not None,
+            setup_cache_hit=setup_cache_hit,
+            setup_cache_key=setup_cache_key,
         )
