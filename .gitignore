@@ -1,1 +1,6 @@
 refs/
+artifacts/
+.pytest_cache/
+mvp_server/*/__pycache__/
+mvp_server/__pycache__/
+bench/__pycache__/

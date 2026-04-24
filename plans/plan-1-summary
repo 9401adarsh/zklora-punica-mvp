@@ -1,0 +1,79 @@
+**Phase 1 Summary**
+You now have a new `mvp_server` implementation scaffold on branch `mvp-phase1-cpu` with core Phase-1 behavior wired and tested.
+
+1. **Config + baseline guards**
+- Added strict typed config loader and validation in [config.py](/home/ext_adas2133_colorado_edu/zklora-punica-mvp/mvp_server/config.py).
+- Enforces Phase-1 constraints (`prefill_only`, `cpu`, `every_request|sampled`, `sample_n` rules, required module path).
+
+2. **Schemas + receipt contract**
+- Added core records in [schemas.py](/home/ext_adas2133_colorado_edu/zklora-punica-mvp/mvp_server/schemas.py):
+`Receipt`, `WitnessRecord`, `ProofJob`, `ProofRecord`.
+- Added receipt builder in [receipt_builder.py](/home/ext_adas2133_colorado_edu/zklora-punica-mvp/mvp_server/receipt_builder.py) with `H_x/H_delta` and `hash_schema_version`.
+
+3. **Runtime (Phase-1 core)**
+- Added module registry in [proof_hook_registry.py](/home/ext_adas2133_colorado_edu/zklora-punica-mvp/mvp_server/runtime/proof_hook_registry.py) with one active module enforcement.
+- Added deterministic hashing contract in [hashing.py](/home/ext_adas2133_colorado_edu/zklora-punica-mvp/mvp_server/runtime/hashing.py) (`float32`, contiguous, header metadata + `sha256`).
+- Added hook capture in [hook_capture.py](/home/ext_adas2133_colorado_edu/zklora-punica-mvp/mvp_server/runtime/hook_capture.py).
+- Added runtime inference + module path resolution in [model_runtime.py](/home/ext_adas2133_colorado_edu/zklora-punica-mvp/mvp_server/runtime/model_runtime.py).
+
+4. **API surface (framework-agnostic class)**
+- Added callable server methods in [server.py](/home/ext_adas2133_colorado_edu/zklora-punica-mvp/mvp_server/api/server.py):
+`post_infer`, `get_proof`, `get_health`, `get_metrics`.
+- Enforces adapter lock (`adapter_not_allowed`).
+- Returns immediate receipt with proof status hint (`pending` or `not_sampled`).
+- Poll endpoint returns `202` for non-terminal statuses and `404 unknown` when missing.
+
+5. **Proof pipeline scaffolding**
+- Added deterministic sampling in [sampling_policy.py](/home/ext_adas2133_colorado_edu/zklora-punica-mvp/mvp_server/proof/sampling_policy.py).
+- Added in-memory status store in [proof_store.py](/home/ext_adas2133_colorado_edu/zklora-punica-mvp/mvp_server/proof/proof_store.py).
+- Added queue/manifest primitives for Phase-2 handoff:
+[proof_queue.py](/home/ext_adas2133_colorado_edu/zklora-punica-mvp/mvp_server/proof/proof_queue.py), [witness_queue.py](/home/ext_adas2133_colorado_edu/zklora-punica-mvp/mvp_server/proof/witness_queue.py), [proof_job_manifest.py](/home/ext_adas2133_colorado_edu/zklora-punica-mvp/mvp_server/proof/proof_job_manifest.py).
+- Added Phase-2 stubs:
+[witness_logger.py](/home/ext_adas2133_colorado_edu/zklora-punica-mvp/mvp_server/proof/witness_logger.py), [prover_worker.py](/home/ext_adas2133_colorado_edu/zklora-punica-mvp/mvp_server/proof/prover_worker.py), [zklora_adapter.py](/home/ext_adas2133_colorado_edu/zklora-punica-mvp/mvp_server/proof/zklora_adapter.py).
+
+6. **Metrics + bench placeholders**
+- Added simple counter/gauge registry in [metrics.py](/home/ext_adas2133_colorado_edu/zklora-punica-mvp/mvp_server/metrics/metrics.py).
+- Added benchmark placeholders:
+[loadgen_prefill_synth.py](/home/ext_adas2133_colorado_edu/zklora-punica-mvp/bench/loadgen_prefill_synth.py), [loadgen_prompts_mixed.py](/home/ext_adas2133_colorado_edu/zklora-punica-mvp/bench/loadgen_prompts_mixed.py), [analyze_runs.py](/home/ext_adas2133_colorado_edu/zklora-punica-mvp/bench/analyze_runs.py).
+
+7. **Fix applied during testing**
+- Hook capture originally failed in container when Torch’s NumPy bridge raised `RuntimeError: Numpy is not available`.
+- Patched fallback to `tensor.tolist()` in [hook_capture.py](/home/ext_adas2133_colorado_edu/zklora-punica-mvp/mvp_server/runtime/hook_capture.py).
+- Added regression test in [test_hook_capture.py](/home/ext_adas2133_colorado_edu/zklora-punica-mvp/mvp_server/tests/test_hook_capture.py).
+
+**Tests Run**
+1. I ran compile checks during implementation:
+- `python3 -m compileall mvp_server bench` (passed).
+2. You ran container test suite:
+- `docker compose exec dev bash -lc "cd /workspace && python3 -m pytest -q mvp_server/tests"`
+- First run caught the hook-capture NumPy bridge bug.
+- After patch, you confirmed all tests passed.
+
+**Test files now present**
+- [test_config.py](/home/ext_adas2133_colorado_edu/zklora-punica-mvp/mvp_server/tests/test_config.py)
+- [test_hashing.py](/home/ext_adas2133_colorado_edu/zklora-punica-mvp/mvp_server/tests/test_hashing.py)
+- [test_sampling_policy.py](/home/ext_adas2133_colorado_edu/zklora-punica-mvp/mvp_server/tests/test_sampling_policy.py)
+- [test_model_runtime_resolution.py](/home/ext_adas2133_colorado_edu/zklora-punica-mvp/mvp_server/tests/test_model_runtime_resolution.py)
+- [test_hook_capture.py](/home/ext_adas2133_colorado_edu/zklora-punica-mvp/mvp_server/tests/test_hook_capture.py)
+- [test_api_server.py](/home/ext_adas2133_colorado_edu/zklora-punica-mvp/mvp_server/tests/test_api_server.py)
+- [test_proof_store.py](/home/ext_adas2133_colorado_edu/zklora-punica-mvp/mvp_server/tests/test_proof_store.py)
+- [test_proof_job_manifest.py](/home/ext_adas2133_colorado_edu/zklora-punica-mvp/mvp_server/tests/test_proof_job_manifest.py)
+
+**What Next**
+1. Clean commit hygiene:
+- remove untracked `__pycache__` files
+- add Python ignores to `.gitignore` (`__pycache__/`, `*.pyc`)
+- commit Phase-1 checkpoint on `mvp-phase1-cpu`
+
+2. Start Phase 2 implementation:
+- real witness persistence (`x.npy`, `delta.npy`, `meta.json`)
+- pointer-only proof job emission
+- proof worker + `zklora_adapter.prove(job)` integration
+- complete status transitions (`pending|ready|failed|not_sampled|dropped_overload`)
+- restart replay from manifest/index
+
+3. Add Phase-2 integration tests:
+- sampled `pending -> ready`
+- forced `failed`
+- queue-full `dropped_overload`
+- polling response/status correctness

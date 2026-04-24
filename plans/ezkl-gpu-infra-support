@@ -1,0 +1,62 @@
+# Enforce EZKL Variant Selection For GPU Runs (Infra + Docs)
+
+## Summary
+Make EZKL package choice explicit and enforceable via infra scripts, and document that GPU proving/bench runs must be executed inside the dev container.  
+Chosen behavior:
+- `start-dev.sh` gets `--ezkl-package {ezkl|ezkl-gpu}` with conditional rebuild.
+- default remains `ezkl` when flag is omitted.
+- `bootstrap-instance.sh` gets matching flag for one-time build consistency.
+
+## Implementation Changes
+- Update image metadata for enforcement:
+  - Add Docker build label in `infra/docker/Dockerfile`:
+    - `LABEL aa.ezkl_pypi_package=$EZKL_PYPI_PACKAGE`
+  - Keep existing `ARG EZKL_PYPI_PACKAGE=ezkl`.
+- Update `infra/scripts/start-dev.sh`:
+  - Add flag parsing: `--ezkl-package ezkl|ezkl-gpu`.
+  - Validate value; fail fast on invalid input.
+  - Before `docker compose up`:
+    - Inspect remote image label `aa.ezkl_pypi_package` for `aa-zklora-dev:latest`.
+    - If image missing or label != requested package, run rebuild:
+      - `EZKL_PYPI_PACKAGE=<selected> docker compose build dev`
+    - If rebuild happened, run `docker compose up -d --force-recreate dev`; otherwise existing `up -d dev`.
+  - Keep existing `--jupyter` and `--no-shell` behavior unchanged.
+- Update `infra/scripts/bootstrap-instance.sh`:
+  - Add optional `--ezkl-package ezkl|ezkl-gpu` (default `ezkl`).
+  - Pass build arg during remote build:
+    - `docker build --build-arg EZKL_PYPI_PACKAGE=<selected> ...`
+- Update `infra/README.md`:
+  - Add explicit statement in daily workflow/docs:
+    - GPU runs must be done inside the dev container.
+    - Host shell is not the execution target for benchmark/prover runs.
+  - Document new script usage:
+    - `./scripts/start-dev.sh --ezkl-package ezkl-gpu`
+    - `./scripts/bootstrap-instance.sh --ezkl-package ezkl-gpu`
+  - Add verification snippet:
+    - image label check and `ezkl.prove` signature check from inside container.
+  - Keep all existing cost/security guidance intact.
+
+## Public Interface Changes
+- New CLI options:
+  - `infra/scripts/start-dev.sh --ezkl-package {ezkl|ezkl-gpu}`
+  - `infra/scripts/bootstrap-instance.sh --ezkl-package {ezkl|ezkl-gpu}`
+- No changes to app/runtime API surfaces (`mvp_server` endpoints and payloads unchanged).
+
+## Test Plan
+- Script behavior validation:
+  - `start-dev.sh --ezkl-package ezkl-gpu` on VM with `ezkl` image triggers rebuild.
+  - Re-running with same package does not rebuild.
+  - Switching back to `--ezkl-package ezkl` triggers rebuild.
+  - Invalid package value exits with clear error.
+- Bootstrap validation:
+  - `bootstrap-instance.sh --ezkl-package ezkl-gpu` passes build arg and completes build.
+- Runtime verification checks:
+  - `docker image inspect aa-zklora-dev:latest` shows correct `aa.ezkl_pypi_package` label.
+  - Inside container: `python3 -c "import inspect, ezkl; print(inspect.signature(ezkl.prove))"` executes successfully.
+- Docs validation:
+  - `infra/README.md` includes explicit “GPU runs inside container” statement and new command examples.
+
+## Assumptions
+- Compose v2 is available on the VM and supports env-invoked build args via command prefix.
+- `aa-zklora-dev:latest` remains the canonical image tag.
+- `ezkl` remains default package unless `--ezkl-package` is provided.

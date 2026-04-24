@@ -22,7 +22,10 @@ RUN pip install torch==2.1.2 torchvision==0.16.2 \
     --index-url https://download.pytorch.org/whl/cu121
 
 # -- ezkl ---------------------------------------------------------------------
-RUN pip install ezkl onnx onnxruntime
+# Default keeps CPU-capable package; override at build-time for GPU-capable wheel path.
+ARG EZKL_PYPI_PACKAGE=ezkl
+LABEL aa.ezkl_pypi_package="${EZKL_PYPI_PACKAGE}"
+RUN pip install "${EZKL_PYPI_PACKAGE}" onnx onnxruntime
 
 # -- punica --------------------------------------------------------------------
 # Install Punica from source -- required for custom SGMV CUDA kernels
@@ -30,7 +33,7 @@ RUN pip install ezkl onnx onnxruntime
 # TORCH_CUDA_ARCH_LIST: T4 (7.5) lacks bf16 intrinsics that Punica needs.
 # Compile for 8.0 (A100) only. Use --a100 flag for SGMV kernel runs.
 ENV TORCH_CUDA_ARCH_LIST="8.0"
-RUN pip install ninja numpy
+RUN pip install ninja "numpy<2"
 WORKDIR /opt
 RUN git clone https://github.com/9401adarsh/punica.git \
     && cd punica && git checkout 591b59899f0a20760821785d06b331c8a2e5cb86 \
@@ -52,7 +55,7 @@ RUN pip install \
     accelerate \
     peft \
     datasets \
-    numpy pandas scipy \
+    "numpy<2" pandas scipy \
     matplotlib seaborn \
     jupyter jupyterlab \
     ipywidgets \
@@ -63,7 +66,7 @@ RUN pip install \
 
 # -- workspace -----------------------------------------------------------------
 WORKDIR /workspace
-ENV PYTHONPATH=/workspace/src:/opt/punica:/opt/zkLoRA
+ENV PYTHONPATH=/workspace:/workspace/src:/workspace/zklora/src:/opt/punica:/opt/zkLoRA/src:/opt/zkLoRA
 
 # expose jupyter
 EXPOSE 8888
