@@ -321,6 +321,207 @@ def test_zklora_adapter_rejects_invalid_backend(tmp_path: Path) -> None:
         ZkLoraAdapter(artifacts_root=str(tmp_path), prover_backend="tpu")
 
 
+def test_zklora_adapter_rejects_invalid_gpu_routing_policy(tmp_path: Path) -> None:
+    with pytest.raises(ValueError, match="gpu_routing_policy"):
+        ZkLoraAdapter(
+            artifacts_root=str(tmp_path),
+            prover_backend="gpu",
+            gpu_routing_policy="invalid",
+        )
+
+
+def test_zklora_adapter_gpu_routing_strict_fails_when_unroutable(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_id = "transformer.h.0.attn.c_attn"
+    request_id = "r_gpu_strict"
+    witness_ref = _write_witness(tmp_path, request_id=request_id, module_id=module_id)
+
+    class FakeCuda:
+        @staticmethod
+        def is_available() -> bool:
+            return True
+
+    class FakeTorch:
+        cuda = FakeCuda()
+
+    monkeypatch.setitem(sys.modules, "torch", FakeTorch())
+    monkeypatch.setattr(ZkLoraAdapter, "_ezkl_prove_supports_backend", lambda self: False)
+
+    called = {"value": False}
+
+    def fake_export(sub_name, x_data, submodule, output_dir, verbose):
+        _ = (x_data, submodule, verbose)
+        safe_name = sub_name.replace(".", "_").replace("/", "_")
+        Path(output_dir, f"{safe_name}.onnx").write_bytes(b"onnx")
+        Path(output_dir, f"{safe_name}.json").write_text(
+            json.dumps({"input_data": [[1.0]]}),
+            encoding="utf-8",
+        )
+
+    async def fake_generate_proofs(onnx_dir, json_dir, output_dir, setup_dir, verbose):
+        _ = (onnx_dir, json_dir, output_dir, setup_dir, verbose)
+        called["value"] = True
+        return (0.1, 0.1, 0.1, 10, 1)
+
+    adapter = ZkLoraAdapter(
+        artifacts_root=str(tmp_path),
+        prover_backend="gpu",
+        gpu_routing_policy="strict",
+        model_loader=lambda _base_model_id, _adapter_id: FakePeftModel(with_target=True),
+        exporter=fake_export,
+        prove_runner=fake_generate_proofs,
+    )
+
+    with pytest.raises(RuntimeError, match="^prove: gpu routing unsupported"):
+        adapter.prove(
+            {
+                "request_id": request_id,
+                "module_id": module_id,
+                "witness_ref": witness_ref,
+            }
+        )
+    assert called["value"] is False
+
+
+def test_zklora_adapter_gpu_routing_fallback_marks_cpu_effective(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_id = "transformer.h.0.attn.c_attn"
+    request_id = "r_gpu_fallback"
+    witness_ref = _write_witness(tmp_path, request_id=request_id, module_id=module_id)
+
+    class FakeCuda:
+        @staticmethod
+        def is_available() -> bool:
+            return True
+
+    class FakeTorch:
+        cuda = FakeCuda()
+
+    monkeypatch.setitem(sys.modules, "torch", FakeTorch())
+    monkeypatch.setattr(ZkLoraAdapter, "_ezkl_prove_supports_backend", lambda self: False)
+
+    observed_backend = {"value": None}
+
+    def fake_export(sub_name, x_data, submodule, output_dir, verbose):
+        _ = (x_data, submodule, verbose)
+        safe_name = sub_name.replace(".", "_").replace("/", "_")
+        Path(output_dir, f"{safe_name}.onnx").write_bytes(b"onnx")
+        Path(output_dir, f"{safe_name}.json").write_text(
+            json.dumps({"input_data": [[1.0]]}),
+            encoding="utf-8",
+        )
+
+    async def fake_generate_proofs(onnx_dir, json_dir, output_dir, setup_dir, verbose):
+        _ = (onnx_dir, json_dir, setup_dir, verbose)
+        observed_backend["value"] = None
+        Path(output_dir, "transformer_h_0_attn_c_attn.pf").write_text(
+            "proof",
+            encoding="utf-8",
+        )
+        Path(output_dir, "transformer_h_0_attn_c_attn_settings.json").write_text(
+            json.dumps({"k": 20}),
+            encoding="utf-8",
+        )
+        return (0.1, 0.1, 0.1, 10, 1)
+
+    adapter = ZkLoraAdapter(
+        artifacts_root=str(tmp_path),
+        prover_backend="gpu",
+        gpu_routing_policy="fallback",
+        model_loader=lambda _base_model_id, _adapter_id: FakePeftModel(with_target=True),
+        exporter=fake_export,
+        prove_runner=fake_generate_proofs,
+    )
+
+    result = adapter.prove(
+        {
+            "request_id": request_id,
+            "module_id": module_id,
+            "witness_ref": witness_ref,
+        }
+    )
+
+    assert observed_backend["value"] is None
+    assert result.backend_intent == "gpu"
+    assert result.backend_effective == "cpu"
+    assert result.backend_routing_supported is False
+    assert result.backend_fallback_used is True
+    assert "policy=fallback" in str(result.backend_routing_reason)
+
+
+def test_zklora_adapter_gpu_routing_supported_marks_gpu_effective(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_id = "transformer.h.0.attn.c_attn"
+    request_id = "r_gpu_supported"
+    witness_ref = _write_witness(tmp_path, request_id=request_id, module_id=module_id)
+
+    class FakeCuda:
+        @staticmethod
+        def is_available() -> bool:
+            return True
+
+    class FakeTorch:
+        cuda = FakeCuda()
+
+    monkeypatch.setitem(sys.modules, "torch", FakeTorch())
+    monkeypatch.setattr(ZkLoraAdapter, "_ezkl_prove_supports_backend", lambda self: True)
+
+    observed_backend = {"value": None}
+
+    def fake_export(sub_name, x_data, submodule, output_dir, verbose):
+        _ = (x_data, submodule, verbose)
+        safe_name = sub_name.replace(".", "_").replace("/", "_")
+        Path(output_dir, f"{safe_name}.onnx").write_bytes(b"onnx")
+        Path(output_dir, f"{safe_name}.json").write_text(
+            json.dumps({"input_data": [[1.0]]}),
+            encoding="utf-8",
+        )
+
+    async def fake_generate_proofs(
+        onnx_dir, json_dir, output_dir, setup_dir, backend, verbose
+    ):
+        _ = (onnx_dir, json_dir, setup_dir, verbose)
+        observed_backend["value"] = backend
+        Path(output_dir, "transformer_h_0_attn_c_attn.pf").write_text(
+            "proof",
+            encoding="utf-8",
+        )
+        Path(output_dir, "transformer_h_0_attn_c_attn_settings.json").write_text(
+            json.dumps({"k": 20}),
+            encoding="utf-8",
+        )
+        return (0.1, 0.1, 0.1, 10, 1)
+
+    adapter = ZkLoraAdapter(
+        artifacts_root=str(tmp_path),
+        prover_backend="gpu",
+        gpu_routing_policy="strict",
+        model_loader=lambda _base_model_id, _adapter_id: FakePeftModel(with_target=True),
+        exporter=fake_export,
+        prove_runner=fake_generate_proofs,
+    )
+
+    result = adapter.prove(
+        {
+            "request_id": request_id,
+            "module_id": module_id,
+            "witness_ref": witness_ref,
+        }
+    )
+
+    assert observed_backend["value"] == "gpu"
+    assert result.backend_intent == "gpu"
+    assert result.backend_effective == "gpu"
+    assert result.backend_routing_supported is True
+    assert result.backend_fallback_used is False
+
+
 def test_zklora_adapter_setup_cache_hits_after_first_build(tmp_path: Path) -> None:
     module_id = "transformer.h.0.attn.c_attn"
     cache_root = tmp_path / "setup-cache"

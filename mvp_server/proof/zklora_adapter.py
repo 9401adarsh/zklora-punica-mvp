@@ -26,6 +26,20 @@ class ProveResult:
     setup_cache_enabled: bool | None = None
     setup_cache_hit: bool | None = None
     setup_cache_key: str | None = None
+    backend_intent: str | None = None
+    backend_effective: str | None = None
+    backend_routing_supported: bool | None = None
+    backend_fallback_used: bool | None = None
+    backend_routing_reason: str | None = None
+
+
+@dataclass(frozen=True)
+class BackendRoutingDecision:
+    backend_intent: str
+    backend_effective: str
+    backend_routing_supported: bool
+    backend_fallback_used: bool
+    backend_routing_reason: str
 
 
 class ZkLoraAdapter:
@@ -42,6 +56,7 @@ class ZkLoraAdapter:
         base_model_id: str = "distilgpt2",
         adapter_id: str = "ng0-k1/distilgpt2-finetuned-es",
         prover_backend: str = "cpu",
+        gpu_routing_policy: str = "fallback",
         model_loader: Any | None = None,
         exporter: Any | None = None,
         prove_runner: Any | None = None,
@@ -50,11 +65,15 @@ class ZkLoraAdapter:
         backend = str(prover_backend).strip().lower()
         if backend not in {"cpu", "gpu"}:
             raise ValueError("prover_backend must be one of {cpu, gpu}")
+        routing_policy = str(gpu_routing_policy).strip().lower()
+        if routing_policy not in {"fallback", "strict"}:
+            raise ValueError("gpu_routing_policy must be one of {fallback, strict}")
 
         self.artifacts_root = Path(artifacts_root)
         self.base_model_id = base_model_id
         self.adapter_id = adapter_id
         self.prover_backend = backend
+        self.gpu_routing_policy = routing_policy
         self._peft_model: Any | None = None
         self._model_loader = model_loader
         self._exporter = exporter
@@ -190,6 +209,57 @@ class ZkLoraAdapter:
             return str(getattr(ezkl, "__version__", "unknown"))
         except Exception:  # pragma: no cover - environment dependent
             return "unknown"
+
+    def _ezkl_prove_supports_backend(self) -> bool:
+        try:
+            import ezkl
+        except Exception:  # pragma: no cover - environment dependent
+            return False
+        return self._supports_kwargs(getattr(ezkl, "prove", None), "backend")
+
+    def _resolve_backend_routing_decision(self) -> BackendRoutingDecision:
+        backend_intent = self.prover_backend
+        if backend_intent == "cpu":
+            return BackendRoutingDecision(
+                backend_intent="cpu",
+                backend_effective="cpu",
+                backend_routing_supported=True,
+                backend_fallback_used=False,
+                backend_routing_reason="cpu_intent",
+            )
+
+        self._ensure_gpu_runtime_available()
+        prove_runner_supports_backend = self._supports_kwargs(self._prove_runner, "backend")
+        ezkl_prove_supports_backend = self._ezkl_prove_supports_backend()
+        routing_supported = bool(
+            prove_runner_supports_backend and ezkl_prove_supports_backend
+        )
+
+        if routing_supported:
+            return BackendRoutingDecision(
+                backend_intent="gpu",
+                backend_effective="gpu",
+                backend_routing_supported=True,
+                backend_fallback_used=False,
+                backend_routing_reason="gpu_routing_supported",
+            )
+
+        unsupported_reason = (
+            "gpu routing unsupported"
+            f" (policy={self.gpu_routing_policy},"
+            f" prove_runner_backend_kwarg_supported={int(prove_runner_supports_backend)},"
+            f" ezkl_backend_kwarg_supported={int(ezkl_prove_supports_backend)})"
+        )
+        if self.gpu_routing_policy == "strict":
+            raise RuntimeError(unsupported_reason)
+
+        return BackendRoutingDecision(
+            backend_intent="gpu",
+            backend_effective="cpu",
+            backend_routing_supported=False,
+            backend_fallback_used=True,
+            backend_routing_reason=unsupported_reason,
+        )
 
     def _setup_cache_fingerprint(self, module_id: str) -> tuple[str, dict[str, str | int]]:
         payload: dict[str, str | int] = {
@@ -352,7 +422,9 @@ class ZkLoraAdapter:
         if not list(proof_dir.glob("*.json")):
             raise ValueError("expected at least one JSON artifact after export")
 
-    def _invoke_prove_runner(self, proof_dir: Path, setup_dir: Path) -> Any:
+    def _invoke_prove_runner(
+        self, proof_dir: Path, setup_dir: Path, backend_effective: str
+    ) -> Any:
         kwargs: dict[str, Any] = {
             "onnx_dir": str(proof_dir),
             "json_dir": str(proof_dir),
@@ -362,7 +434,7 @@ class ZkLoraAdapter:
         if self._supports_kwargs(self._prove_runner, "setup_dir"):
             kwargs["setup_dir"] = str(setup_dir)
         if self._supports_kwargs(self._prove_runner, "backend"):
-            kwargs["backend"] = self.prover_backend
+            kwargs["backend"] = backend_effective
 
         try:
             return self._prove_runner(**kwargs)
@@ -376,6 +448,8 @@ class ZkLoraAdapter:
                 "setup_dir": str(setup_dir),
                 "verbose": False,
             }
+            if self._supports_kwargs(self._prove_runner, "backend"):
+                fallback_kwargs["backend"] = backend_effective
             try:
                 return self._prove_runner(**fallback_kwargs)
             except TypeError as second_exc:
@@ -395,12 +469,13 @@ class ZkLoraAdapter:
         module_id: str,
         setup_cache_key: str | None,
         setup_cache_fingerprint: dict[str, str | int] | None,
-    ) -> tuple[dict[str, float] | None, bool | None]:
-        self._ensure_gpu_runtime_available()
+    ) -> tuple[dict[str, float] | None, bool | None, BackendRoutingDecision]:
 
         if self._prove_runner is None:
             prove_mod = self._import_any(("zklora.zk_proof_generator",))
             self._prove_runner = getattr(prove_mod, "generate_proofs")
+        routing_decision = self._resolve_backend_routing_decision()
+        backend_effective = routing_decision.backend_effective
 
         cache_hit: bool | None = None
         if setup_cache_key and setup_cache_fingerprint:
@@ -415,13 +490,17 @@ class ZkLoraAdapter:
             )
             if cache_hit:
                 lock.release()
-                result = self._invoke_prove_runner(proof_dir, setup_dir)
+                result = self._invoke_prove_runner(
+                    proof_dir, setup_dir, backend_effective=backend_effective
+                )
                 if inspect.isawaitable(result):
                     result = asyncio.run(result)
             else:
                 try:
                     self._invalidate_setup_cache(setup_dir, module_id)
-                    result = self._invoke_prove_runner(proof_dir, setup_dir)
+                    result = self._invoke_prove_runner(
+                        proof_dir, setup_dir, backend_effective=backend_effective
+                    )
                     if inspect.isawaitable(result):
                         result = asyncio.run(result)
                     self._persist_setup_cache_meta(
@@ -433,7 +512,9 @@ class ZkLoraAdapter:
                 finally:
                     lock.release()
         else:
-            result = self._invoke_prove_runner(proof_dir, setup_dir)
+            result = self._invoke_prove_runner(
+                proof_dir, setup_dir, backend_effective=backend_effective
+            )
             if inspect.isawaitable(result):
                 result = asyncio.run(result)
 
@@ -452,7 +533,7 @@ class ZkLoraAdapter:
                 "prove_s": prove_s,
                 "total_s": setup_s + witness_s + prove_s,
             }
-        return stage_timings, cache_hit
+        return stage_timings, cache_hit, routing_decision
 
     def _collect_proof_refs(self, proof_dir: Path, setup_dir: Path) -> tuple[str, str]:
         proof_files = sorted(proof_dir.glob("*.pf"))
@@ -502,7 +583,7 @@ class ZkLoraAdapter:
             raise RuntimeError(f"export: {exc}") from exc
 
         try:
-            stage_timings, setup_cache_hit = self._run_zklora_prove(
+            stage_timings, setup_cache_hit, routing_decision = self._run_zklora_prove(
                 proof_dir=proof_dir,
                 setup_dir=setup_dir,
                 module_id=module_id,
@@ -530,4 +611,9 @@ class ZkLoraAdapter:
             setup_cache_enabled=self._setup_cache_root is not None,
             setup_cache_hit=setup_cache_hit,
             setup_cache_key=setup_cache_key,
+            backend_intent=routing_decision.backend_intent,
+            backend_effective=routing_decision.backend_effective,
+            backend_routing_supported=routing_decision.backend_routing_supported,
+            backend_fallback_used=routing_decision.backend_fallback_used,
+            backend_routing_reason=routing_decision.backend_routing_reason,
         )

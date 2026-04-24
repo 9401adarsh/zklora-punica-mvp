@@ -60,6 +60,266 @@ The script prints the run directory at the end, for example:
 - `--base-model-id` model id/path, default: `distilgpt2`
 - `--adapter-id` adapter id/path, default: `ng0-k1/distilgpt2-finetuned-es`
 - `--setup-cache-root` optional path for persistent setup cache reuse across runs
+- `--gpu-routing-policy` one of `strict|fallback`, default: `strict` in this harness
+
+GPU acceleration note for `ezkl-gpu`: set `ENABLE_ICICLE_GPU=true` in GPU benchmark shells. Keep `ICICLE_SMALL_K` unset unless you are explicitly tuning small-`k` behavior.
+
+## Canonical Benchmark Runbook (April 23, 2026)
+
+This is the full terminal-only runbook for the CPU baseline + GPU bug-check cycle.
+All commands are copy/paste ready.
+
+### 0) Preflight (mandatory)
+
+Confirm containers are running:
+
+```bash
+docker ps --format '{{.Names}}' | rg '^aa-zklora-(cpu|gpu)$'
+```
+
+Resolve local model/adapter snapshots and enforce offline mode in CPU container:
+
+```bash
+docker exec aa-zklora-cpu bash -lc '
+set -euo pipefail
+base=$(ls -1d /root/.cache/huggingface/hub/models--distilgpt2/snapshots/* | head -n 1)
+adapter=$(ls -1d /root/.cache/huggingface/hub/models--ng0-k1--distilgpt2-finetuned-es/snapshots/* | head -n 1)
+test -d "$base" && test -d "$adapter"
+echo "BASE=$base"
+echo "ADAPTER=$adapter"
+echo "HF_HUB_OFFLINE=1"
+echo "TRANSFORMERS_OFFLINE=1"
+'
+```
+
+Resolve snapshots and verify GPU stack in GPU container:
+
+```bash
+docker exec aa-zklora-gpu bash -lc '
+set -euo pipefail
+base=$(ls -1d /root/.cache/huggingface/hub/models--distilgpt2/snapshots/* | head -n 1)
+adapter=$(ls -1d /root/.cache/huggingface/hub/models--ng0-k1--distilgpt2-finetuned-es/snapshots/* | head -n 1)
+test -d "$base" && test -d "$adapter"
+export ENABLE_ICICLE_GPU=true
+python3 - <<PY
+import inspect
+import ezkl
+print("ezkl.prove signature:", inspect.signature(ezkl.prove))
+PY
+nvidia-smi
+'
+```
+
+### 1) CPU baseline pack (mandatory order)
+
+```bash
+docker exec aa-zklora-cpu bash -lc '
+set -euo pipefail
+base=$(ls -1d /root/.cache/huggingface/hub/models--distilgpt2/snapshots/* | head -n 1)
+adapter=$(ls -1d /root/.cache/huggingface/hub/models--ng0-k1--distilgpt2-finetuned-es/snapshots/* | head -n 1)
+export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+
+common="python3 /workspace/bench/phase4b_bounded_peft.py \
+  --timeout-sec 7200 \
+  --request-concurrency 1 \
+  --output-root /workspace/artifacts/runs \
+  --setup-cache-root /workspace/artifacts/setup-cache/phase4b-cpu-baseline \
+  --base-model-id $base \
+  --adapter-id $adapter \
+  --gpu-routing-policy strict"
+
+$common --backends cpu --threads 1 --requests 20
+$common --backends cpu --threads 2 --requests 20
+$common --backends cpu --threads 5 --requests 20
+$common --backends cpu --threads 10 --requests 20
+'
+```
+
+Optional extension:
+
+```bash
+docker exec aa-zklora-cpu bash -lc '
+set -euo pipefail
+base=$(ls -1d /root/.cache/huggingface/hub/models--distilgpt2/snapshots/* | head -n 1)
+adapter=$(ls -1d /root/.cache/huggingface/hub/models--ng0-k1--distilgpt2-finetuned-es/snapshots/* | head -n 1)
+export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+python3 /workspace/bench/phase4b_bounded_peft.py \
+  --backends cpu \
+  --threads 10 \
+  --requests 50 \
+  --timeout-sec 7200 \
+  --request-concurrency 1 \
+  --output-root /workspace/artifacts/runs \
+  --setup-cache-root /workspace/artifacts/setup-cache/phase4b-cpu-baseline \
+  --base-model-id "$base" \
+  --adapter-id "$adapter" \
+  --gpu-routing-policy strict
+'
+```
+
+### 2) GPU bug-check pack with 1s telemetry (mandatory)
+
+```bash
+docker exec aa-zklora-gpu bash -lc '
+set -euo pipefail
+mkdir -p /workspace/artifacts/runs/telemetry
+base=$(ls -1d /root/.cache/huggingface/hub/models--distilgpt2/snapshots/* | head -n 1)
+adapter=$(ls -1d /root/.cache/huggingface/hub/models--ng0-k1--distilgpt2-finetuned-es/snapshots/* | head -n 1)
+export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+export ENABLE_ICICLE_GPU=true
+
+run_with_telemetry () {
+  backend="$1"; threads="$2"; requests="$3"; tag="$4"; policy="$5"
+  ts=$(date -u +%Y%m%dT%H%M%SZ)
+  csv="/workspace/artifacts/runs/telemetry/${tag}-${ts}.csv"
+  log="/workspace/artifacts/runs/telemetry/${tag}-${ts}.log"
+  (
+    echo "ts_utc,utilization_gpu,memory_used_mb,power_w,compute_pids" > "$csv"
+    while true; do
+      now=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+      util=$(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits | head -n 1 | tr -d " ")
+      mem=$(nvidia-smi --query-gpu=memory.used --format=csv,noheader,nounits | head -n 1 | tr -d " ")
+      pwr=$(nvidia-smi --query-gpu=power.draw --format=csv,noheader,nounits | head -n 1 | tr -d " ")
+      pids=$(nvidia-smi --query-compute-apps=pid --format=csv,noheader,nounits | tr "\n" ";" | sed "s/;*$//")
+      echo "$now,${util:-0},${mem:-0},${pwr:-0},\"${pids}\"" >> "$csv"
+      sleep 1
+    done
+  ) &
+  tele_pid=$!
+  set +e
+  python3 /workspace/bench/phase4b_bounded_peft.py \
+    --backends "$backend" \
+    --threads "$threads" \
+    --requests "$requests" \
+    --timeout-sec 7200 \
+    --request-concurrency 1 \
+    --output-root /workspace/artifacts/runs \
+    --setup-cache-root /workspace/artifacts/setup-cache/phase4b-gpu-bugcheck \
+    --base-model-id "$base" \
+    --adapter-id "$adapter" \
+    --gpu-routing-policy "$policy" > "$log" 2>&1
+  rc=$?
+  set -e
+  kill "$tele_pid" 2>/dev/null || true
+  wait "$tele_pid" 2>/dev/null || true
+  echo "$tag rc=$rc csv=$csv log=$log"
+  return $rc
+}
+
+# Use strict by default; switch to fallback only for explicit bug diagnosis.
+run_with_telemetry cpu 1 20 gpucheck-cpu-t1-r20 strict
+run_with_telemetry gpu 1 20 gpucheck-gpu-t1-r20 strict
+run_with_telemetry cpu 2 20 gpucheck-cpu-t2-r20 strict
+run_with_telemetry gpu 2 20 gpucheck-gpu-t2-r20 strict
+'
+```
+
+### 3) GPU cold vs warm proof (mandatory)
+
+```bash
+docker exec aa-zklora-gpu bash -lc '
+set -euo pipefail
+base=$(ls -1d /root/.cache/huggingface/hub/models--distilgpt2/snapshots/* | head -n 1)
+adapter=$(ls -1d /root/.cache/huggingface/hub/models--ng0-k1--distilgpt2-finetuned-es/snapshots/* | head -n 1)
+export HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
+export ENABLE_ICICLE_GPU=true
+cache_root=/workspace/artifacts/setup-cache/phase4b-gpu-coldwarm
+rm -rf "$cache_root"
+
+python3 /workspace/bench/phase4b_bounded_peft.py \
+  --backends gpu \
+  --threads 1 \
+  --requests 1 \
+  --timeout-sec 7200 \
+  --request-concurrency 1 \
+  --output-root /workspace/artifacts/runs \
+  --setup-cache-root "$cache_root" \
+  --base-model-id "$base" \
+  --adapter-id "$adapter" \
+  --gpu-routing-policy strict
+
+python3 /workspace/bench/phase4b_bounded_peft.py \
+  --backends gpu \
+  --threads 1 \
+  --requests 1 \
+  --timeout-sec 7200 \
+  --request-concurrency 1 \
+  --output-root /workspace/artifacts/runs \
+  --setup-cache-root "$cache_root" \
+  --base-model-id "$base" \
+  --adapter-id "$adapter" \
+  --gpu-routing-policy strict
+'
+```
+
+### 4) Post-run integrity checks
+
+```bash
+docker exec aa-zklora-cpu bash -lc \
+"find /workspace/artifacts/runs -path '*/backend-*/summary.json' -print | sort"
+```
+
+```bash
+docker exec aa-zklora-cpu python3 - <<PY
+import glob, json
+bad = []
+for path in glob.glob("/workspace/artifacts/runs/phase4b-bounded-peft-*/backend-*/summary.json"):
+    with open(path, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    counts = data.get("status_counts", {})
+    if counts.get("pending", 0) or counts.get("queued", 0):
+        bad.append(path)
+print("pending_or_queued_cases:", len(bad))
+for p in bad:
+    print(p)
+PY
+```
+
+### 5) Extract slide-ready tables and confidence statement
+
+```bash
+docker exec aa-zklora-cpu python3 - <<PY
+import glob, json
+rows = []
+for path in sorted(glob.glob("/workspace/artifacts/runs/phase4b-bounded-peft-*/backend-*/summary.json")):
+    with open(path, "r", encoding="utf-8") as f:
+        d = json.load(f)
+    trust = d.get("backend_trust", {})
+    rows.append({
+        "path": path,
+        "backend": d.get("backend"),
+        "threads": d.get("threads"),
+        "requests": d.get("requests"),
+        "req_per_sec": d.get("req_per_sec"),
+        "ready": d.get("status_counts", {}).get("ready", 0),
+        "failed": d.get("status_counts", {}).get("failed", 0),
+        "backend_effective": trust.get("backend_effective"),
+        "routing_supported": trust.get("backend_routing_supported"),
+        "fallback_used": trust.get("backend_fallback_used"),
+        "confidence": trust.get("confidence"),
+    })
+for r in rows:
+    print(r)
+PY
+```
+
+Confidence statement template:
+
+```text
+As of April 23, 2026, GPU proof execution confidence is LOW unless strict routing passes with backend_effective=gpu and no fallback.
+```
+
+### Expected outputs checklist
+
+- Every mandatory case has `backend-*/summary.json`.
+- No mandatory case ends with lingering `pending` or `queued`.
+- CPU baseline table has all required thread points and one throughput headline.
+- GPU bug-check rows include `backend_effective`, `backend_routing_supported`, and confidence.
+- Cold/warm pair shows setup-cache miss then hit.
+
+### Guardrail
+
+Do not claim GPU performance unless runs were executed with `--gpu-routing-policy strict` and results show routable GPU (`backend_effective=gpu`, `backend_fallback_used=false`, confidence not `low`).
 
 ## Example Runs
 
@@ -88,12 +348,15 @@ docker exec aa-zklora-dev python3 /workspace/bench/phase4b_bounded_peft.py \
 ### 3) GPU-only sweep
 
 ```bash
-docker exec aa-zklora-dev python3 /workspace/bench/phase4b_bounded_peft.py \
+docker exec aa-zklora-dev bash -lc '
+export ENABLE_ICICLE_GPU=true
+python3 /workspace/bench/phase4b_bounded_peft.py \
   --backends gpu \
   --threads 1,2 \
   --requests 5,20,40 \
   --timeout-sec 1200 \
   --output-root /workspace/artifacts/runs
+'
 ```
 
 ## Cached Setup Mode (Opt-In)
@@ -107,13 +370,16 @@ Use `--setup-cache-root` to persist setup artifacts across timestamped benchmark
 Example (shared cache root):
 
 ```bash
-docker exec aa-zklora-dev python3 /workspace/bench/phase4b_bounded_peft.py \
+docker exec aa-zklora-dev bash -lc '
+export ENABLE_ICICLE_GPU=true
+python3 /workspace/bench/phase4b_bounded_peft.py \
   --backends gpu \
   --threads 1 \
   --requests 5 \
   --timeout-sec 1200 \
   --setup-cache-root /workspace/artifacts/setup-cache/phase4b \
   --output-root /workspace/artifacts/runs
+'
 ```
 
 Note: cache reuse across runs only works when `--setup-cache-root` points to a stable path.
@@ -280,7 +546,7 @@ ls -1d /root/.cache/huggingface/hub/models--ng0-k1--distilgpt2-finetuned-es/snap
 docker exec aa-zklora-dev bash -lc '
 base=$(ls -1d /root/.cache/huggingface/hub/models--distilgpt2/snapshots/* | head -n 1)
 adapter=$(ls -1d /root/.cache/huggingface/hub/models--ng0-k1--distilgpt2-finetuned-es/snapshots/* | head -n 1)
-HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
+HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 ENABLE_ICICLE_GPU=true \
 python3 /workspace/bench/phase4b_bounded_peft.py \
   --backends gpu \
   --threads 8 \

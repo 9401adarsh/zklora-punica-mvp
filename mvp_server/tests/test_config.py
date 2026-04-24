@@ -9,6 +9,7 @@ def test_default_config_is_valid() -> None:
     assert cfg.proof_mode == "every_request"
     assert cfg.sample_n is None
     assert cfg.prover_backend == "cpu"
+    assert cfg.gpu_routing_policy == "fallback"
     assert cfg.proof_worker_threads == 2
     assert cfg.inference_device == "cuda"
     assert cfg.artifacts_root == "/artifacts"
@@ -32,6 +33,22 @@ def test_gpu_backend_is_allowed() -> None:
 def test_invalid_backend_is_rejected() -> None:
     with pytest.raises(ValueError, match="prover_backend"):
         AppConfig.from_dict({"prover_backend": "tpu"})
+
+
+def test_gpu_routing_policy_values() -> None:
+    cfg = AppConfig.from_dict({"gpu_routing_policy": "strict"})
+    assert cfg.gpu_routing_policy == "strict"
+
+
+def test_invalid_gpu_routing_policy_is_rejected() -> None:
+    with pytest.raises(ValueError, match="gpu_routing_policy"):
+        AppConfig.from_dict({"gpu_routing_policy": "maybe"})
+
+
+def test_gpu_routing_policy_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("MVP_GPU_ROUTING_POLICY", "strict")
+    cfg = AppConfig.from_env()
+    assert cfg.gpu_routing_policy == "strict"
 
 
 def test_resolved_paths_use_artifacts_root() -> None:

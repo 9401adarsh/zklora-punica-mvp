@@ -15,6 +15,7 @@ class AppConfig:
     proof_mode: str = "every_request"
     sample_n: Optional[int] = None
     prover_backend: str = "cpu"
+    gpu_routing_policy: str = "fallback"
     proof_worker_threads: int = 2
     inference_device: str = "cuda"
     hash_schema_version: int = 1
@@ -36,6 +37,9 @@ class AppConfig:
             proof_mode=str(data.get("proof_mode", cls.proof_mode)),
             sample_n=data.get("sample_n", cls.sample_n),
             prover_backend=str(data.get("prover_backend", cls.prover_backend)),
+            gpu_routing_policy=str(
+                data.get("gpu_routing_policy", cls.gpu_routing_policy)
+            ),
             proof_worker_threads=int(
                 data.get("proof_worker_threads", cls.proof_worker_threads)
             ),
@@ -68,6 +72,9 @@ class AppConfig:
             "proof_mode": os.getenv("MVP_PROOF_MODE", cls.proof_mode),
             "sample_n": sample_n,
             "prover_backend": os.getenv("MVP_PROVER_BACKEND", cls.prover_backend),
+            "gpu_routing_policy": os.getenv(
+                "MVP_GPU_ROUTING_POLICY", cls.gpu_routing_policy
+            ),
             "proof_worker_threads": int(
                 os.getenv("MVP_PROOF_WORKER_THREADS", str(cls.proof_worker_threads))
             ),
@@ -115,6 +122,8 @@ class AppConfig:
             raise ValueError("sample_n must be unset when proof_mode=every_request")
         if self.prover_backend not in {"cpu", "gpu"}:
             raise ValueError("prover_backend must be one of {cpu, gpu}")
+        if self.gpu_routing_policy not in {"fallback", "strict"}:
+            raise ValueError("gpu_routing_policy must be one of {fallback, strict}")
         if self.proof_worker_threads < 1:
             raise ValueError("proof_worker_threads must be >= 1")
         if self.inference_device not in {"cuda", "cpu"}:

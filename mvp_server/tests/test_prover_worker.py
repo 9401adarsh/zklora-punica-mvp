@@ -1,5 +1,6 @@
 import json
 import threading
+import time
 
 from mvp_server.proof.proof_job_manifest import ProofJobManifest
 from mvp_server.proof.proof_store import ProofStore
@@ -23,6 +24,15 @@ class SuccessAdapter:
 class FailingAdapter:
     def prove(self, _job):
         raise RuntimeError("prove: backend failure")
+
+
+class PanicLikeError(BaseException):
+    pass
+
+
+class PanicLikeAdapter:
+    def prove(self, _job):
+        raise PanicLikeError("icicle panic")
 
 
 class PatternAdapter:
@@ -115,6 +125,66 @@ def test_prover_worker_pending_to_failed(tmp_path) -> None:
     assert record.status == "failed"
     assert record.error_code == "prove_failed"
     assert record.error_message
+
+
+def test_prover_worker_pending_to_failed_on_base_exception(tmp_path) -> None:
+    manifest = ProofJobManifest(
+        str(tmp_path / "proof_jobs.jsonl"),
+        claims_path=str(tmp_path / "proof_claims.jsonl"),
+    )
+    store = ProofStore()
+
+    manifest.append(
+        {
+            "request_id": "r_panic",
+            "module_id": "m1",
+            "witness_ref": str(tmp_path / "w_panic.json"),
+        }
+    )
+    store.set_status("r_panic", "queued", module_id="m1")
+
+    worker = ProverWorker(manifest=manifest, proof_store=store, adapter=PanicLikeAdapter())
+    assert worker.run_once()
+
+    record = store.get("r_panic")
+    assert record is not None
+    assert record.status == "failed"
+    assert record.error_code == "prove_failed"
+    assert "PanicLikeError" in (record.error_message or "")
+
+
+def test_threaded_worker_base_exception_does_not_hang(tmp_path) -> None:
+    manifest = ProofJobManifest(
+        str(tmp_path / "proof_jobs.jsonl"),
+        claims_path=str(tmp_path / "proof_claims.jsonl"),
+    )
+    store = ProofStore()
+
+    manifest.append(
+        {
+            "request_id": "r_thread_panic",
+            "module_id": "m1",
+            "witness_ref": str(tmp_path / "w_thread_panic.json"),
+        }
+    )
+    store.set_status("r_thread_panic", "queued", module_id="m1")
+
+    worker = ProverWorker(
+        manifest=manifest,
+        proof_store=store,
+        adapter_factory=lambda: PanicLikeAdapter(),
+        proof_worker_threads=1,
+    )
+    started = time.time()
+    processed = worker.run(max_jobs=1, poll_interval_s=0.001)
+    elapsed = time.time() - started
+
+    record = store.get("r_thread_panic")
+    assert record is not None
+    assert record.status == "failed"
+    assert record.error_code == "prove_failed"
+    assert elapsed < 2.0
+    assert processed in {0, 1}
 
 
 def test_threaded_worker_processes_all_jobs_no_duplicates(tmp_path) -> None:

@@ -1,4 +1,5 @@
 import json
+import sys
 import time
 from pathlib import Path
 
@@ -31,6 +32,7 @@ def test_render_summary_markdown_contains_comparison_sections() -> None:
         "run_dir": "/tmp/r",
         "timeout_sec": 100,
         "request_concurrency": 1,
+        "gpu_routing_policy": "strict",
         "points": [
             {
                 "backend": "cpu",
@@ -45,6 +47,12 @@ def test_render_summary_markdown_contains_comparison_sections() -> None:
                     "witness": {"avg": 0.2},
                     "prove": {"avg": 0.3},
                     "total": {"avg": 0.6},
+                },
+                "backend_trust": {
+                    "backend_effective": "cpu",
+                    "backend_routing_supported": True,
+                    "backend_fallback_rate": 0.0,
+                    "confidence": "n/a",
                 },
             },
             {
@@ -61,6 +69,12 @@ def test_render_summary_markdown_contains_comparison_sections() -> None:
                     "prove": {"avg": 0.3},
                     "total": {"avg": 0.6},
                 },
+                "backend_trust": {
+                    "backend_effective": "cpu",
+                    "backend_routing_supported": True,
+                    "backend_fallback_rate": 0.0,
+                    "confidence": "n/a",
+                },
             },
             {
                 "backend": "gpu",
@@ -76,6 +90,12 @@ def test_render_summary_markdown_contains_comparison_sections() -> None:
                     "prove": {"avg": 0.3},
                     "total": {"avg": 0.6},
                 },
+                "backend_trust": {
+                    "backend_effective": "cpu",
+                    "backend_routing_supported": False,
+                    "backend_fallback_rate": 1.0,
+                    "confidence": "low",
+                },
             },
         ],
     }
@@ -83,6 +103,9 @@ def test_render_summary_markdown_contains_comparison_sections() -> None:
     assert "All Points" in summary_md
     assert "Thread Scaling (Fixed Backend + Requests)" in summary_md
     assert "Backend Delta (Fixed Threads + Requests)" in summary_md
+    assert "backend_effective" in summary_md
+    assert "fallback_rate" in summary_md
+    assert "trust" in summary_md
 
 
 def test_run_case_bounded_marks_timeout(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -103,6 +126,22 @@ def test_run_case_bounded_marks_timeout(tmp_path: Path, monkeypatch: pytest.Monk
         seq_len=1,
     )
     assert result["status"] == "timed_out"
+
+
+def test_parse_args_gpu_routing_policy(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "phase4b_bounded_peft.py",
+            "--gpu-routing-policy",
+            "fallback",
+            "--backends",
+            "cpu",
+        ],
+    )
+    args = harness._parse_args()
+    assert args.gpu_routing_policy == "fallback"
 
 
 def test_run_case_direct_full_peft_path_smoke(
@@ -174,6 +213,8 @@ def test_run_case_direct_full_peft_path_smoke(
     assert result["status_counts"]["ready"] == 2
     assert loader_called["count"] >= 1
     assert result["stage_timing_s"]["total"]["count"] == 2
+    assert result["backend_trust"]["backend_intent"] == "cpu"
+    assert result["backend_trust"]["confidence"] == "n/a"
 
 
 def test_load_partial_status_extracts_partial_metrics(tmp_path: Path) -> None:
@@ -192,6 +233,11 @@ def test_load_partial_status_extracts_partial_metrics(tmp_path: Path) -> None:
                     "stage_total_s": "6.0",
                     "setup_cache_enabled": "1",
                     "setup_cache_hit": "0",
+                    "backend_intent": "gpu",
+                    "backend_effective": "cpu",
+                    "backend_routing_supported": "0",
+                    "backend_fallback_used": "1",
+                    "backend_routing_reason": "gpu routing unsupported",
                 },
                 "error_message": None,
             },
@@ -204,7 +250,7 @@ def test_load_partial_status_extracts_partial_metrics(tmp_path: Path) -> None:
     }
     (proof_dir / "proof_store.json").write_text(json.dumps(payload), encoding="utf-8")
 
-    status_counts, metrics = harness._load_partial_status(case_dir)
+    status_counts, metrics = harness._load_partial_status(case_dir, default_backend="gpu")
 
     assert status_counts == {"ready": 1, "failed": 1}
     assert metrics["prover_duration_ms"]["count"] == 1
@@ -220,3 +266,8 @@ def test_load_partial_status_extracts_partial_metrics(tmp_path: Path) -> None:
         "misses": 1,
         "hit_rate": 0.0,
     }
+    assert metrics["backend_trust"]["backend_intent"] == "gpu"
+    assert metrics["backend_trust"]["backend_effective"] == "cpu"
+    assert metrics["backend_trust"]["backend_routing_supported"] is False
+    assert metrics["backend_trust"]["backend_fallback_used"] is True
+    assert metrics["backend_trust"]["confidence"] == "low"

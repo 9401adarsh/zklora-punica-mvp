@@ -142,9 +142,76 @@ def _summarize_setup_cache(entries: list[bool]) -> dict[str, Any]:
     }
 
 
+def _normalize_backend_token(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value).strip().lower()
+    if text in {"cpu", "gpu"}:
+        return text
+    return None
+
+
+def _summarize_backend_trust(
+    intents: list[str],
+    effectives: list[str],
+    routing_supported_flags: list[bool],
+    fallback_flags: list[bool],
+    reasons: list[str],
+    default_intent: str,
+) -> dict[str, Any]:
+    backend_intent = intents[-1] if intents else default_intent
+    if effectives:
+        backend_effective = effectives[-1]
+    elif backend_intent == "cpu":
+        backend_effective = "cpu"
+    else:
+        backend_effective = "unknown"
+
+    backend_routing_supported = (
+        None if not routing_supported_flags else all(routing_supported_flags)
+    )
+    backend_fallback_used = None if not fallback_flags else any(fallback_flags)
+    fallback_rate = (
+        None
+        if not fallback_flags
+        else round(sum(1 for flag in fallback_flags if flag) / len(fallback_flags), 6)
+    )
+    reasons_unique = sorted(set(reasons))
+    routing_reason = "; ".join(reasons_unique[:3]) if reasons_unique else None
+
+    if backend_intent != "gpu":
+        confidence = "n/a"
+    elif backend_routing_supported is True and backend_fallback_used is False and backend_effective == "gpu":
+        confidence = "high"
+    else:
+        confidence = "low"
+
+    return {
+        "backend_intent": backend_intent,
+        "backend_effective": backend_effective,
+        "backend_routing_supported": backend_routing_supported,
+        "backend_fallback_used": backend_fallback_used,
+        "backend_fallback_rate": fallback_rate,
+        "backend_routing_reason": routing_reason,
+        "confidence": confidence,
+    }
+
+
+def _empty_backend_trust(default_intent: str) -> dict[str, Any]:
+    return _summarize_backend_trust(
+        intents=[],
+        effectives=[],
+        routing_supported_flags=[],
+        fallback_flags=[],
+        reasons=[],
+        default_intent=default_intent,
+    )
+
+
 def _extract_case_metrics(
     records: dict[str, ProofRecord],
     request_ids: list[str],
+    default_backend: str,
 ) -> dict[str, Any]:
     prover_duration_ms: list[float] = []
     stage_setup_s: list[float] = []
@@ -153,6 +220,11 @@ def _extract_case_metrics(
     stage_total_s: list[float] = []
     setup_cache_entries: list[bool] = []
     error_messages: list[str] = []
+    backend_intents: list[str] = []
+    backend_effectives: list[str] = []
+    backend_routing_supported_flags: list[bool] = []
+    backend_fallback_flags: list[bool] = []
+    backend_routing_reasons: list[str] = []
 
     for request_id in request_ids:
         record = records.get(request_id)
@@ -173,6 +245,21 @@ def _extract_case_metrics(
         cache_hit = _bool_from_ref(refs.get("setup_cache_hit"))
         if cache_enabled and cache_hit is not None:
             setup_cache_entries.append(cache_hit)
+        backend_intent = _normalize_backend_token(refs.get("backend_intent"))
+        if backend_intent is not None:
+            backend_intents.append(backend_intent)
+        backend_effective = _normalize_backend_token(refs.get("backend_effective"))
+        if backend_effective is not None:
+            backend_effectives.append(backend_effective)
+        backend_routing_supported = _bool_from_ref(refs.get("backend_routing_supported"))
+        if backend_routing_supported is not None:
+            backend_routing_supported_flags.append(backend_routing_supported)
+        backend_fallback_used = _bool_from_ref(refs.get("backend_fallback_used"))
+        if backend_fallback_used is not None:
+            backend_fallback_flags.append(backend_fallback_used)
+        backend_routing_reason = refs.get("backend_routing_reason")
+        if isinstance(backend_routing_reason, str) and backend_routing_reason:
+            backend_routing_reasons.append(backend_routing_reason)
         if record.error_message:
             error_messages.append(record.error_message)
 
@@ -187,10 +274,20 @@ def _extract_case_metrics(
         },
         "error_samples": unique_errors[:5],
         "setup_cache": _summarize_setup_cache(setup_cache_entries),
+        "backend_trust": _summarize_backend_trust(
+            intents=backend_intents,
+            effectives=backend_effectives,
+            routing_supported_flags=backend_routing_supported_flags,
+            fallback_flags=backend_fallback_flags,
+            reasons=backend_routing_reasons,
+            default_intent=default_backend,
+        ),
     }
 
 
-def _extract_case_metrics_from_raw_records(records: dict[str, Any]) -> dict[str, Any]:
+def _extract_case_metrics_from_raw_records(
+    records: dict[str, Any], default_backend: str
+) -> dict[str, Any]:
     prover_duration_ms: list[float] = []
     stage_setup_s: list[float] = []
     stage_witness_s: list[float] = []
@@ -198,6 +295,11 @@ def _extract_case_metrics_from_raw_records(records: dict[str, Any]) -> dict[str,
     stage_total_s: list[float] = []
     setup_cache_entries: list[bool] = []
     error_messages: list[str] = []
+    backend_intents: list[str] = []
+    backend_effectives: list[str] = []
+    backend_routing_supported_flags: list[bool] = []
+    backend_fallback_flags: list[bool] = []
+    backend_routing_reasons: list[str] = []
 
     for record in records.values():
         if not isinstance(record, dict):
@@ -230,6 +332,22 @@ def _extract_case_metrics_from_raw_records(records: dict[str, Any]) -> dict[str,
             if cache_enabled and cache_hit is not None:
                 setup_cache_entries.append(cache_hit)
 
+            backend_intent = _normalize_backend_token(refs.get("backend_intent"))
+            if backend_intent is not None:
+                backend_intents.append(backend_intent)
+            backend_effective = _normalize_backend_token(refs.get("backend_effective"))
+            if backend_effective is not None:
+                backend_effectives.append(backend_effective)
+            backend_routing_supported = _bool_from_ref(refs.get("backend_routing_supported"))
+            if backend_routing_supported is not None:
+                backend_routing_supported_flags.append(backend_routing_supported)
+            backend_fallback_used = _bool_from_ref(refs.get("backend_fallback_used"))
+            if backend_fallback_used is not None:
+                backend_fallback_flags.append(backend_fallback_used)
+            backend_routing_reason = refs.get("backend_routing_reason")
+            if isinstance(backend_routing_reason, str) and backend_routing_reason:
+                backend_routing_reasons.append(backend_routing_reason)
+
         error_message = record.get("error_message")
         if isinstance(error_message, str) and error_message:
             error_messages.append(error_message)
@@ -245,6 +363,14 @@ def _extract_case_metrics_from_raw_records(records: dict[str, Any]) -> dict[str,
         },
         "error_samples": unique_errors[:5],
         "setup_cache": _summarize_setup_cache(setup_cache_entries),
+        "backend_trust": _summarize_backend_trust(
+            intents=backend_intents,
+            effectives=backend_effectives,
+            routing_supported_flags=backend_routing_supported_flags,
+            fallback_flags=backend_fallback_flags,
+            reasons=backend_routing_reasons,
+            default_intent=default_backend,
+        ),
     }
 
 
@@ -305,12 +431,14 @@ def run_case_direct(
     base_model_id: Optional[str] = None,
     adapter_id: Optional[str] = None,
     setup_cache_root: Optional[str] = None,
+    gpu_routing_policy: str = "strict",
 ) -> dict[str, Any]:
     runtime_artifacts = ensure_dir(case_dir / "runtime_artifacts")
     config_data: dict[str, Any] = {
         "artifacts_root": str(runtime_artifacts),
         "proof_mode": "every_request",
         "prover_backend": case.backend,
+        "gpu_routing_policy": gpu_routing_policy,
         "proof_worker_threads": case.threads,
     }
     if base_model_id is not None:
@@ -330,6 +458,7 @@ def run_case_direct(
             base_model_id=config.base_model_id,
             adapter_id=config.adapter_id,
             prover_backend=config.prover_backend,
+            gpu_routing_policy=config.gpu_routing_policy,
             setup_cache_root=setup_cache_root,
         ),
         proof_worker_threads=config.proof_worker_threads,
@@ -352,7 +481,7 @@ def run_case_direct(
 
     records = server.proof_store.all_records()
     status_counts = _count_statuses(records, request_ids)
-    metrics = _extract_case_metrics(records, request_ids)
+    metrics = _extract_case_metrics(records, request_ids, default_backend=case.backend)
     status = _classify_completed_case(enqueued_requests, status_counts)
     throughput = (
         (enqueued_requests / worker_wall_s) if worker_wall_s > 0 and enqueued_requests > 0 else 0.0
@@ -372,6 +501,7 @@ def run_case_direct(
         "stage_timing_s": metrics["stage_timing_s"],
         "error_samples": metrics["error_samples"],
         "setup_cache": metrics["setup_cache"],
+        "backend_trust": metrics["backend_trust"],
         "enqueue_errors": enqueue_errors[:5],
         "case_dir": str(case_dir),
     }
@@ -390,6 +520,7 @@ def _run_case_subprocess_target(
     base_model_id: Optional[str],
     adapter_id: Optional[str],
     setup_cache_root: Optional[str],
+    gpu_routing_policy: str,
     out_queue: mp.Queue,
 ) -> None:
     case = BenchmarkCase(**case_payload)
@@ -405,13 +536,16 @@ def _run_case_subprocess_target(
             base_model_id=base_model_id,
             adapter_id=adapter_id,
             setup_cache_root=setup_cache_root,
+            gpu_routing_policy=gpu_routing_policy,
         )
         out_queue.put({"ok": True, "result": result})
     except Exception as exc:  # pragma: no cover - defensive benchmark error capture
         out_queue.put({"ok": False, "error": str(exc)})
 
 
-def _load_partial_status(case_dir: Path) -> tuple[dict[str, int], dict[str, Any]]:
+def _load_partial_status(
+    case_dir: Path, default_backend: str
+) -> tuple[dict[str, int], dict[str, Any]]:
     store_path = case_dir / "runtime_artifacts" / "proof" / "proof_store.json"
     empty_metrics = {
         "prover_duration_ms": {"count": 0, "avg": None, "min": None, "max": None},
@@ -423,6 +557,7 @@ def _load_partial_status(case_dir: Path) -> tuple[dict[str, int], dict[str, Any]
         },
         "error_samples": [],
         "setup_cache": {"enabled": False, "hits": 0, "misses": 0, "hit_rate": None},
+        "backend_trust": _empty_backend_trust(default_intent=default_backend),
     }
 
     if not store_path.exists():
@@ -442,7 +577,9 @@ def _load_partial_status(case_dir: Path) -> tuple[dict[str, int], dict[str, Any]
         status = str(rec.get("status", "unknown"))
         status_counts[status] = status_counts.get(status, 0) + 1
 
-    metrics = _extract_case_metrics_from_raw_records(records)
+    metrics = _extract_case_metrics_from_raw_records(
+        records, default_backend=default_backend
+    )
     return status_counts, metrics
 
 
@@ -458,6 +595,7 @@ def run_case_bounded(
     base_model_id: Optional[str] = None,
     adapter_id: Optional[str] = None,
     setup_cache_root: Optional[str] = None,
+    gpu_routing_policy: str = "strict",
 ) -> dict[str, Any]:
     case_dir = ensure_dir(run_dir / case.tag())
     queue: mp.Queue = mp.Queue(maxsize=1)
@@ -475,6 +613,7 @@ def run_case_bounded(
             base_model_id,
             adapter_id,
             setup_cache_root,
+            gpu_routing_policy,
             queue,
         ),
         daemon=True,
@@ -486,7 +625,9 @@ def run_case_bounded(
     if proc.is_alive():
         proc.terminate()
         proc.join(timeout=3.0)
-        status_counts, metrics = _load_partial_status(case_dir)
+        status_counts, metrics = _load_partial_status(
+            case_dir, default_backend=case.backend
+        )
         processed_jobs = status_counts.get("ready", 0) + status_counts.get("failed", 0)
         throughput = (processed_jobs / elapsed) if elapsed > 0 and processed_jobs > 0 else 0.0
         result = {
@@ -506,6 +647,7 @@ def run_case_bounded(
             "stage_timing_s": metrics["stage_timing_s"],
             "error_samples": metrics["error_samples"],
             "setup_cache": metrics["setup_cache"],
+            "backend_trust": metrics["backend_trust"],
             "enqueue_errors": [],
             "case_dir": str(case_dir),
         }
@@ -533,6 +675,7 @@ def run_case_bounded(
             },
             "error_samples": [str(outcome.get("error", "unknown benchmark error"))],
             "setup_cache": {"enabled": False, "hits": 0, "misses": 0, "hit_rate": None},
+            "backend_trust": _empty_backend_trust(default_intent=case.backend),
             "enqueue_errors": [],
             "case_dir": str(case_dir),
         }
@@ -557,11 +700,12 @@ def render_summary_markdown(payload: dict[str, Any]) -> str:
         f"- timeout_sec: `{payload['timeout_sec']}`",
         f"- request_concurrency: `{payload['request_concurrency']}`",
         f"- setup_cache_root: `{payload.get('setup_cache_root') or '-'}`",
+        f"- gpu_routing_policy: `{payload.get('gpu_routing_policy') or '-'}`",
         "",
         "## All Points",
         "",
-        "| backend | threads | requests | status | ready | failed | wall_s | req_per_sec | setup_s(avg) | witness_s(avg) | prove_s(avg) | total_s(avg) | cache_hits | cache_misses | cache_hit_rate |",
-        "|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|",
+        "| backend | threads | requests | status | ready | failed | wall_s | req_per_sec | setup_s(avg) | witness_s(avg) | prove_s(avg) | total_s(avg) | cache_hits | cache_misses | cache_hit_rate | backend_effective | routing_supported | fallback_rate | trust |",
+        "|---|---:|---:|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|---|---:|---|",
     ]
     for point in points:
         counts = point["status_counts"]
@@ -573,8 +717,15 @@ def render_summary_markdown(payload: dict[str, Any]) -> str:
         cache_misses = int(setup_cache.get("misses", 0))
         hit_rate = setup_cache.get("hit_rate")
         cache_hit_rate = "-" if hit_rate is None else f"{float(hit_rate):.6f}"
+        backend_trust = point.get("backend_trust", {})
+        backend_effective = str(backend_trust.get("backend_effective", "-"))
+        routing_supported_val = backend_trust.get("backend_routing_supported")
+        routing_supported = "-" if routing_supported_val is None else str(bool(routing_supported_val)).lower()
+        fallback_rate_val = backend_trust.get("backend_fallback_rate")
+        fallback_rate = "-" if fallback_rate_val is None else f"{float(fallback_rate_val):.6f}"
+        confidence = str(backend_trust.get("confidence", "-"))
         lines.append(
-            "| {backend} | {threads} | {requests} | {status} | {ready} | {failed} | {wall:.6f} | {rps:.6f} | {setup} | {witness} | {prove} | {total} | {cache_hits} | {cache_misses} | {cache_hit_rate} |".format(
+            "| {backend} | {threads} | {requests} | {status} | {ready} | {failed} | {wall:.6f} | {rps:.6f} | {setup} | {witness} | {prove} | {total} | {cache_hits} | {cache_misses} | {cache_hit_rate} | {backend_effective} | {routing_supported} | {fallback_rate} | {confidence} |".format(
                 backend=point["backend"],
                 threads=point["threads"],
                 requests=point["requests"],
@@ -590,6 +741,10 @@ def render_summary_markdown(payload: dict[str, Any]) -> str:
                 cache_hits=cache_hits,
                 cache_misses=cache_misses,
                 cache_hit_rate=cache_hit_rate,
+                backend_effective=backend_effective,
+                routing_supported=routing_supported,
+                fallback_rate=fallback_rate,
+                confidence=confidence,
             )
         )
 
@@ -667,6 +822,7 @@ def run_matrix(
     base_model_id: Optional[str] = None,
     adapter_id: Optional[str] = None,
     setup_cache_root: Optional[str] = None,
+    gpu_routing_policy: str = "strict",
 ) -> Path:
     run_dir = ensure_dir(output_root / f"phase4b-bounded-peft-{utc_label()}")
     cases = expand_cases(backends=backends, threads=threads, requests=requests)
@@ -685,6 +841,7 @@ def run_matrix(
                 base_model_id=base_model_id,
                 adapter_id=adapter_id,
                 setup_cache_root=setup_cache_root,
+                gpu_routing_policy=gpu_routing_policy,
             )
         )
 
@@ -696,6 +853,7 @@ def run_matrix(
         "hidden_dim": hidden_dim,
         "seq_len": seq_len,
         "setup_cache_root": setup_cache_root,
+        "gpu_routing_policy": gpu_routing_policy,
         "points": points,
     }
     write_json(run_dir / "summary.json", payload)
@@ -724,6 +882,12 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="Optional persistent setup cache root. When set, setup artifacts are reused across runs.",
     )
+    parser.add_argument(
+        "--gpu-routing-policy",
+        default="strict",
+        choices=["fallback", "strict"],
+        help="Routing behavior when gpu backend intent cannot be proven routable.",
+    )
     return parser.parse_args()
 
 
@@ -743,6 +907,7 @@ def main() -> None:
         base_model_id=args.base_model_id,
         adapter_id=args.adapter_id,
         setup_cache_root=args.setup_cache_root,
+        gpu_routing_policy=args.gpu_routing_policy,
     )
     print(str(run_dir))
 

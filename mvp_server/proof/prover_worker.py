@@ -90,6 +90,20 @@ class ProverWorker:
                 artifact_refs["setup_cache_hit"] = "1" if result.setup_cache_hit else "0"
             if result.setup_cache_key is not None:
                 artifact_refs["setup_cache_key"] = result.setup_cache_key
+            if result.backend_intent is not None:
+                artifact_refs["backend_intent"] = result.backend_intent
+            if result.backend_effective is not None:
+                artifact_refs["backend_effective"] = result.backend_effective
+            if result.backend_routing_supported is not None:
+                artifact_refs["backend_routing_supported"] = (
+                    "1" if result.backend_routing_supported else "0"
+                )
+            if result.backend_fallback_used is not None:
+                artifact_refs["backend_fallback_used"] = (
+                    "1" if result.backend_fallback_used else "0"
+                )
+            if result.backend_routing_reason is not None:
+                artifact_refs["backend_routing_reason"] = result.backend_routing_reason
             self.proof_store.set_terminal(
                 request_id=request_id,
                 status="ready",
@@ -98,13 +112,13 @@ class ProverWorker:
                 event_at=time.time(),
                 lifecycle_key="proof_ready_at",
             )
-        except Exception as exc:
+        except BaseException as exc:
             self.proof_store.set_terminal(
                 request_id=request_id,
                 status="failed",
                 module_id=module_id,
                 error_code="prove_failed",
-                error_message=str(exc),
+                error_message=f"{type(exc).__name__}: {exc}",
                 event_at=time.time(),
                 lifecycle_key="proof_failed_at",
             )
@@ -134,7 +148,22 @@ class ProverWorker:
                 try:
                     if job is None:
                         return
-                    self._process_claimed_job(job, adapter)
+                    try:
+                        self._process_claimed_job(job, adapter)
+                    except BaseException as exc:
+                        # Guard against native exceptions escaping adapter.prove and
+                        # killing the worker thread, which can deadlock queue.join().
+                        request_id = self._job_field(job, "request_id")
+                        module_id = self._job_field(job, "module_id")
+                        self.proof_store.set_terminal(
+                            request_id=request_id,
+                            status="failed",
+                            module_id=module_id,
+                            error_code="prove_failed",
+                            error_message=f"{type(exc).__name__}: {exc}",
+                            event_at=time.time(),
+                            lifecycle_key="proof_failed_at",
+                        )
                     with processed_lock:
                         processed += 1
                 finally:
@@ -188,6 +217,7 @@ def build_worker_from_config(config: AppConfig) -> ProverWorker:
             base_model_id=config.base_model_id,
             adapter_id=config.adapter_id,
             prover_backend=config.prover_backend,
+            gpu_routing_policy=config.gpu_routing_policy,
         )
 
     return ProverWorker(
