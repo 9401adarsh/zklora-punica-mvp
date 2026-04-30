@@ -96,28 +96,6 @@ stateDiagram-v2
     pending --> failed
 ```
 
-## Results (As of April 23, 2026)
-Source: `plans/final-benchmark.md`
-
-### CPU Baseline (20 requests)
-| threads | req_per_sec | ready_rate |
-|---:|---:|---:|
-| 1 | 0.010338 | 1.00 |
-| 2 | 0.014695 | 0.80 |
-| 5 | 0.017747 | 0.65 |
-| 10 | 0.017619 | 0.65 |
-
-Headline throughput point: **0.017747 req/s at 5 threads**, with reliability caveat (`13 ready / 7 failed`).
-
-### GPU Claim Boundary
-As of **April 23, 2026**, GPU proof execution confidence is **low** for that benchmark cycle, so GPU speedup is **non-claimable** from those runs.
-
-### Cold vs Warm Setup Cache (GPU, t=1, r=1)
-- Cold: `0.003521 req/s`, setup avg `191.64s`
-- Warm: `0.010442 req/s`, setup avg `0.00s`
-
-This confirms strong setup amortization when cache is reused.
-
 ## Where We Are Right Now
 - Architecture and harness are in place and test-covered.
 - CPU throughput scaling signal exists, but reliability drops at higher thread counts.
