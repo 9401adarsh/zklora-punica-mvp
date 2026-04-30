@@ -1,0 +1,52 @@
+\begin{tikzpicture}[
+  x=1mm,
+  y=1mm,
+  >=Stealth,
+  line width=0.25pt,
+  node/.style={
+    draw,
+    rounded corners,
+    align=center,
+    font=\scriptsize,
+    inner sep=2pt,
+    fill=white,
+    minimum height=7mm
+  }
+]
+
+% Top row
+\node[node, minimum width=18mm] (client) at (0,36) {Client};
+\node[node, minimum width=30mm] (api) at (28,36) {MVPServer\\API};
+\node[node, minimum width=34mm] (runtime) at (62,36) {ModelRuntime\\+ HookCapture};
+
+% Middle row
+\node[node, minimum width=25mm] (wlog) at (12,24) {Witness\\Logger};
+\node[node, minimum width=28mm] (manifest) at (38,24) {ProofJob\\Manifest};
+\node[node, minimum width=24mm] (pstore) at (62,24) {Proof\\Store};
+
+% Bottom row
+\node[node, minimum width=22mm] (worker) at (28,12) {Prover\\Worker};
+\node[node, minimum width=24mm] (adapter) at (52,12) {ZkLora\\Adapter};
+\node[node, minimum width=25mm] (wart) at (8,2) {Witness\\Artifacts};
+\node[node, minimum width=22mm] (part) at (62,2) {Proof\\Artifacts};
+
+% Main request path
+\draw[->] (client) -- node[above, font=\tiny] {POST /infer} (api);
+\draw[->] (api) -- (runtime);
+
+% Poll path
+\draw[->] (client.south) .. controls (0,30) and (20,30) .. node[above, font=\tiny] {GET /proof/:id} (api.south);
+
+% Persistence path
+\draw[->] (api) -- (wlog);
+\draw[->] (wlog) -- (wart);
+\draw[->] (api) -- (manifest);
+\draw[->] (api) -- (pstore);
+
+% Worker/prover path
+\draw[->] (worker) -- node[above, font=\tiny] {claim\_next} (manifest);
+\draw[->] (worker) -- (pstore);
+\draw[->] (worker) -- (adapter);
+\draw[->] (adapter) -- (part);
+
+\end{tikzpicture}

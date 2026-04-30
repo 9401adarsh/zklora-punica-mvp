@@ -1,0 +1,5 @@
+pair,backend,threads,requests,req_per_sec,ready,failed,trust
+t=1 matched,cpu,1,20,0.010043,20,0,n/a
+t=1 matched,gpu intent,1,20,0.009996,20,0,low
+t=2 matched,cpu,2,20,0.022152,10,10,n/a
+t=2 matched,gpu intent,2,20,0.020053,11,9,low

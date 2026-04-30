@@ -1,0 +1,12 @@
+flowchart LR
+    C[Client] -->|POST /infer| API[MVPServer API]
+    API --> RT[ModelRuntime + HookCapture]
+    API --> WL[WitnessLogger]
+    API --> M[ProofJobManifest JSONL]
+    API --> PS[ProofStore JSON]
+    C -->|GET /proof/:request_id| API
+    W[ProverWorker] -->|claim_next| M
+    W -->|set pending/terminal| PS
+    W --> ZA[ZkLoraAdapter]
+    ZA --> PA[(Proof Artifacts)]
+    WL --> WA[(Witness Artifacts)]

@@ -1,0 +1,160 @@
+\documentclass[manuscript,nonacm]{acmart}
+\usepackage{graphicx}
+
+\settopmatter{printacmref=false}
+\renewcommand\footnotetextcopyrightpermission[1]{}
+\pagestyle{plain}
+
+\begin{document}
+
+% Update these fields as needed before final submission.
+\newcommand{\reportauthorname}{Adarsh}
+\newcommand{\reportinstitution}{University of Colorado Boulder}
+\newcommand{\reportcountry}{USA}
+\newcommand{\reportemail}{adas2133@colorado.edu}
+
+\title{zkLoRA $\times$ Punica MVP: A Proof-Aware Serving Pipeline with Bounded Benchmarking}
+
+\author{\reportauthorname}
+\affiliation{%
+  \institution{\reportinstitution}
+  \country{\reportcountry}
+}
+\email{\reportemail}
+
+\begin{abstract}
+Proof-aware LoRA serving is hard: inference must stay fast while proof generation is slow and fragile. This report presents an MVP with asynchronous proof generation, a benchmark workflow, and two speedup levers: multithreaded proving and setup-cache reuse. The system uses a receipt-first API, stored witness/proof artifacts, a threaded prover worker, and backend intent routing (\texttt{cpu|gpu}). In runs dated April 23, 2026, CPU throughput improved from 0.010338 req/s (1 thread) to 0.017747 req/s (5 threads), but reliability dropped at higher thread counts. GPU-intent runs were tested, but GPU speedup is non-claimable in this cycle because routing trust and prove-path confidence were too low.
+\end{abstract}
+
+\maketitle
+
+\section{Background and Motivation}
+
+Parameter-Efficient Fine-Tuning (PEFT) adapts a base model by changing only a small set of parameters instead of all model weights. Low-Rank Adaptation (LoRA) is a PEFT method that adds trainable low-rank updates instead of full-model fine-tuning~\cite{hu2021lora}. In multi-tenant or third-party setups, two needs matter: (1) proving an adapter behaves as claimed, and (2) doing this without exposing private adapter details. zkLoRA addresses this with succinct proofs for LoRA checks~\cite{roy2025zklora}.
+
+Recent work on zkLLM shows that full-LLM proving is possible, with a reported correctness proof for 13B-parameter inference in under 15 minutes and proof size under 200~kB~\cite{sun2024zkllm}. That result motivates this project: study how proving can be sped up in serving. This MVP starts small at the LoRA module level, then uses measured speedup levers as a path toward larger, stack-wide proving.
+
+From a serving perspective, correctness alone is not enough; operations also matter. Prior systems like Punica and vLLM show that scheduling, memory behavior, and throughput-latency tradeoffs drive real performance~\cite{chen2023punica,kwon2023pagedattention}. This project applies that same view: return inference quickly, run proving asynchronously, and track status with reproducible artifacts.
+
+\subsection{What Constitutes a Proof}
+
+In this MVP, the proof flow has four blocks: \textbf{setup}, \textbf{witness generation}, \textbf{proving}, and \textbf{verifying}. \textbf{Setup} prepares reusable proving artifacts for the target module. \textbf{Witness generation} creates claim-bound witness data from request context (adapter, module, input path). \textbf{Proving} uses setup artifacts plus witness data to produce proof outputs and job metadata. \textbf{Verifying} checks proof validity from persisted artifacts and writes the result to serving state. A proof is complete only when all four blocks run with consistent artifact links and visible state transitions.
+
+\section{Work Done}
+
+This phase implemented an architecture and benchmark path focused on measurable proof-aware serving behavior:
+
+\begin{enumerate}
+    \item \textbf{Asynchronous proof-aware API path.} \texttt{POST /infer} returns immediately with a receipt while proof execution runs in the background.
+    \item \textbf{Durable artifact and status flow.} Witness data, proof jobs, and proof-state records are persisted for auditability and restart continuity.
+    \item \textbf{Threaded prover worker.} A manifest-driven worker supports configurable thread pools for concurrent proof job execution.
+    \item \textbf{Backend intent routing and guardrails.} Prover backend intent (\texttt{cpu|gpu}) is configurable, with strict/fallback routing policy and trust metadata capture.
+    \item \textbf{Benchmark workflow.} \texttt{bench/phase4b\_bounded\_peft.py} executes matrix points with request-count and timeout bounds for MVP evaluation.
+    \item \textbf{Setup-cache reuse support.} Setup artifacts are reusable across runs, enabling explicit cold-vs-warm amortization checks.
+\end{enumerate}
+
+\begin{figure}[t]
+\centering
+\includegraphics[width=\linewidth]{figures/architecture_flow.png}
+\caption{Compact architecture flow used in the MVP.}
+\label{fig:arch}
+\end{figure}
+
+\section{Design for Speedup}
+
+\subsection{Multithreading to Reduce Wall Time}
+
+The design uses a manifest-driven threaded prover worker so independent jobs can run in parallel. This lowers wall time for request batches by overlapping prove work across a configurable thread pool. It also uses setup-cache reuse so expensive setup work is shared across concurrent jobs and repeated runs that use the same setup root. This lowers repeated setup cost per proof and improves end-to-end wall time. As of April 23, 2026, throughput improved from 0.010338 req/s (1 thread) to 0.017747 req/s (5 threads), and wall time dropped from 32.24 to 18.78 minutes. Cold-vs-warm checks also show setup amortization (191.640715s cold vs 0.000000s warm for setup). Reliability still drops at higher concurrency, so thread count and cache reuse are treated as controlled speedup levers with a clear throughput-versus-readiness tradeoff.
+
+\subsection{GPU Acceleration Path}
+
+The design also tests GPU acceleration through backend-intent routing (\texttt{cpu|gpu}) with strict/fallback guardrails and trust metadata. GPU intent is a potential speedup path, but claims depend on routing confidence and prove-path trust. As of April 23, 2026, trust is still low in matched runs, so GPU speedup is non-claimable for this cycle even though GPU-intent paths and cache-amortization behavior were measured. A key blocker is Icicle-related backend instability in GitHub Issue \#882 (\url{https://github.com/zkonduit/ezkl/issues/882}). In this MVP, that blocker can force GPU-intent proving to fall back to CPU when routing confidence is not sufficient.
+
+\section{Experiments}
+
+\subsection{Setup and Scope}
+
+Experiments used the MVP with the full PEFT proof path and persisted run artifacts. The benchmark base model was \texttt{distilgpt2}, and the proved target module was \texttt{transformer.h.0.attn.c\_attn} in prefill-only scope. Scope was narrow, with strict proof semantics and controlled matrix points for backend/thread analysis. Results in this report come from the benchmark record dated April 23, 2026.
+
+\subsection{Workloads and Matrices}
+
+Three groups were run:
+
+\begin{itemize}
+    \item \textbf{CPU baseline pack}: threads $\in \{1,2,5,10\}$ with requests $=20$.
+    \item \textbf{Matched CPU/GPU-intent pairs}: $(threads,requests)=(1,20)$ and $(2,20)$.
+    \item \textbf{GPU cold/warm cache check}: $(threads,requests)=(1,1)$ with shared setup-cache root.
+\end{itemize}
+
+Primary metrics were throughput (\texttt{req\_per\_sec}), status counts (\texttt{ready}/\texttt{failed}), ready-rate reliability, stage timings, and backend trust indicators for GPU-intent runs.
+
+\section{Results}
+
+\subsection{CPU Throughput and Reliability}
+
+CPU throughput increased with thread count up to 5 threads, then flattened, while reliability declined at higher concurrency.
+
+\begin{table}[t]
+\caption{CPU baseline (20 requests), April 23, 2026.}
+\label{tab:cpu}
+\centering
+\small
+\begin{tabular}{rrrrr}
+\toprule
+threads & req & req/s & wall\_time\_min & ready\_rate \\
+\midrule
+1  & 20 & 0.010338 & 32.24 & 1.00 \\
+2  & 20 & 0.014695 & 22.68 & 0.95 \\
+5  & 20 & 0.017747 & 18.78 & 0.85 \\
+10 & 20 & 0.017619 & 18.92 & 0.85 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The headline point is 0.017747 req/s at 5 threads, with 18.78 minutes wall time and readiness of 17/20.
+
+\subsection{Matched CPU vs GPU-Intent Trust}
+
+\begin{table}[t]
+\caption{Matched CPU vs GPU-intent points (trust view).}
+\label{tab:gpu}
+\centering
+\small
+\begin{tabular}{lrrrrrrl}
+\toprule
+pair & bkend & th & req & req/s & ready & failed & trust \\
+\midrule
+t=1 & cpu & 1 & 20 & 0.010043 & 20 & 0  & n/a \\
+t=1 & gpu & 1 & 20 & 0.009996 & 20 & 0  & low \\
+t=2 & cpu & 2 & 20 & 0.022152 & 10 & 10 & n/a \\
+t=2 & gpu & 2 & 20 & 0.020053 & 11 & 9  & low \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+As of \textbf{April 23, 2026}, GPU proving speedup is \textbf{non-claimable} in this benchmark cycle due to low backend confidence. Blocker tracking and repeated panic signatures support this boundary~\cite{ezklIssue882}.
+
+A cold-vs-warm GPU-intent cache-root reuse check showed strong setup amortization (cold setup 191.640715s vs warm setup 0.000000s), with throughput increasing from 0.003521 to 0.010442 req/s for the single-request probe.
+
+\section{Limitations}
+
+\textbf{Reliability at higher thread counts.} Throughput gains did not preserve uniform readiness; failures increased at larger thread settings.
+
+\textbf{GPU trust boundary not crossed.} Backend intent could not be promoted to high-confidence effective GPU proving, so GPU performance claims remain non-claimable as of April 23, 2026.
+
+\textbf{Proving stack instability risks.} Icicle-related panic signatures appeared during version-sweep debugging, so strict routing validation and fail-fast behavior are required before future GPU claims~\cite{ezklIssue882}.
+
+\textbf{Narrow benchmark scope.} Results are based on synthetic-request benchmark settings in the MVP and prefill-only proof scope; broader production traffic characteristics remain future work.
+
+\section{Repository}
+
+Project repository: \url{https://github.com/9401adarsh/zklora-punica-mvp}
+
+\section{Acknowledgements}
+
+Parts of this report were drafted and edited with GPT-based writing support tools. All technical claims, result interpretations, and final content decisions were reviewed by the author.
+
+\bibliographystyle{ACM-Reference-Format}
+\bibliography{references}
+
+\end{document}

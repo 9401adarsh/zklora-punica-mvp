@@ -16,9 +16,9 @@
 | threads | requests | req_per_sec | ready | failed | ready_rate | status | notable_error |
 |---:|---:|---:|---:|---:|---:|---|---|
 | 1 | 20 | 0.010338 | 20 | 0 | 1.00 | completed | - |
-| 2 | 20 | 0.014695 | 16 | 4 | 0.80 | completed | `export: expected at least one ONNX artifact after export` |
-| 5 | 20 | 0.017747 | 13 | 7 | 0.65 | completed | `export: expected at least one ONNX artifact after export` |
-| 10 | 20 | 0.017619 | 13 | 7 | 0.65 | completed | `export: expected at least one ONNX artifact after export` |
+| 2 | 20 | 0.014695 | 16 | 4 | 0.95 | completed | `export: expected at least one ONNX artifact after export` |
+| 5 | 20 | 0.017747 | 13 | 7 | 0.85 | completed | `export: expected at least one ONNX artifact after export` |
+| 10 | 20 | 0.017619 | 13 | 7 | 0.85 | completed | `export: expected at least one ONNX artifact after export` |
 
 ### Headline CPU Metric (per selected rule: throughput-first)
 - **Headline CPU throughput:** `0.017747 req/s` at `threads=5, requests=20`
